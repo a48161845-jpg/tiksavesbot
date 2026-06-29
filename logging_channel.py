@@ -16,7 +16,6 @@ from helpers import html_escape, code, now_msk_str
 from storage import store
 
 # ================== AUTOSAVE LOOP ==================
-_autosave_task: Optional[asyncio.Task] = None
 
 async def autosave_loop() -> None:
     while True:

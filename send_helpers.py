@@ -7,7 +7,7 @@ import random
 import asyncio
 import contextlib
 from pathlib import Path
-from typing import Optional, List
+from typing import Callable, Optional, List
 
 from aiogram.types import Message, InlineKeyboardMarkup, InputMediaPhoto, FSInputFile
 from aiogram.exceptions import TelegramRetryAfter, TelegramBadRequest
@@ -64,7 +64,7 @@ async def send_video_smart(
     caption: str,
     status_msg: Optional[Message] = None,
     reply_markup: Optional[InlineKeyboardMarkup] = None,
-    cancel_cb: Optional[callable] = None,
+    cancel_cb: Optional[Callable] = None,
 ) -> None:
     try:
         await message.answer_video(video_url, caption=caption, parse_mode="HTML", reply_markup=reply_markup)

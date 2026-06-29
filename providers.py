@@ -8,7 +8,7 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Callable, Optional, Dict, Any, List
 from collections import deque
 
 import aiohttp
@@ -39,8 +39,8 @@ class BaseProvider:
         path: Path,
         max_bytes: int,
         stage: str,
-        progress_cb: Optional[callable] = None,
-        cancel_cb: Optional[callable] = None,
+        progress_cb: Optional[Callable] = None,
+        cancel_cb: Optional[Callable] = None,
     ) -> int:
         raise NotImplementedError
 
@@ -147,8 +147,8 @@ class TikWMClient(BaseProvider):
         path: Path,
         max_bytes: int,
         stage: str,
-        progress_cb: Optional[callable] = None,
-        cancel_cb: Optional[callable] = None,
+        progress_cb: Optional[Callable] = None,
+        cancel_cb: Optional[Callable] = None,
     ) -> int:
         headers = {"User-Agent": "Mozilla/5.0", "Accept": "*/*", "Connection": "keep-alive"}
 
@@ -212,8 +212,8 @@ class ApifyProvider(BaseProvider):
         path: Path,
         max_bytes: int,
         stage: str,
-        progress_cb: Optional[callable] = None,
-        cancel_cb: Optional[callable] = None,
+        progress_cb: Optional[Callable] = None,
+        cancel_cb: Optional[Callable] = None,
     ) -> int:
         client = TikWMClient(self.session, self.bot)
         return await client.download_to_file(
