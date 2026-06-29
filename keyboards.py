@@ -241,6 +241,9 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📢 Реклама", callback_data="ad:advert"),
             ],
             [
+                InlineKeyboardButton(text="👑 Администраторы", callback_data="ad:adminlist"),
+            ],
+            [
                 InlineKeyboardButton(text="🧾 Команды", callback_data="ad:help"),
                 InlineKeyboardButton(text="❌ Закрыть", callback_data="ad:close"),
             ],
@@ -258,38 +261,55 @@ def admin_back_kb() -> InlineKeyboardMarkup:
     )
 
 ADMIN_MENU_TEXT = (
-    "🛠 <b>Админ-панель</b>\n\n"
-    "Кнопки ниже:\n"
-    "• 📊 Статистика - выбор периода\n"
-    "• 🏆 Топ - лидеры по периоду\n"
-    "• 🚫 Бан-лист - список активных банов\n"
-    "• 🗄 Дамп БД - скачать дамп базы данных\n"
-    "• 📌/📢 - рассылки с подтверждением\n"
-    "• 🧾 Команды - полный список команд\n"
+    "🛠 <b>Админ-панель</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━\n\n"
+    "📊 <b>Статистика</b> — выбор периода\n"
+    "🏆 <b>Топ</b> — лидеры по периоду\n"
+    "🚫 <b>Бан-лист</b> — активные баны\n"
+    "🗄 <b>Дамп БД</b> — скачать базу данных\n"
+    "👑 <b>Администраторы</b> — список и управление\n"
+    "📌 <b>Напоминание</b> / 📢 <b>Реклама</b> — рассылки\n"
+    "🧾 <b>Команды</b> — полный список\n"
 )
 
 ADMIN_HELP_TEXT = (
-    "🧾 <b>Команды администратора</b>\n\n"
-    "📊 Статистика\n"
-    f"• {code('/stats d')} {code('/stats n')} {code('/stats m')} {code('/stats y')} {code('/stats all')}\n"
-    f"• {code('/stats 2026-02-01 2026-02-07')} (диапазон)\n\n"
-    "🏆 Топ\n"
-    f"• {code('/top d')} {code('/top n')} {code('/top m')} {code('/top y')} {code('/top all')}\n"
-    f"• {code('/top 2026-02-01 2026-02-07')} (диапазон)\n\n"
-    "🚫 Баны\n"
-    f"• {code('/ban ID 2h причина')}\n"
-    f"• {code('/unban ID')}\n"
-    f"• {code('/banlist')}\n"
-    f"• {code('/baninfo ID')}\n\n"
-    "🗄 База данных\n"
-    f"• {code('/dbfile')} — дамп БД файлом\n"
-    f"• {code('/dblog')} — отчёт в лог-канал\n\n"
-    "👤 Пользователь\n"
-    f"• {code('/info ID')}\n\n"
-    "📣 Рассылка\n"
-    f"• {code('/broadcast текст')}\n"
-    "• /reminder_message\n"
-    "• /advertisement_message\n"
+    "🧾 <b>Команды администратора</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━\n\n"
+
+    "📊 <b>Статистика</b>\n"
+    f"├ {code('/stats d')} — день\n"
+    f"├ {code('/stats n')} — неделя\n"
+    f"├ {code('/stats m')} — месяц\n"
+    f"├ {code('/stats y')} — год\n"
+    f"├ {code('/stats all')} — всё время\n"
+    f"└ {code('/stats 2026-02-01 2026-02-07')} — диапазон\n\n"
+
+    "🏆 <b>Топ пользователей</b>\n"
+    f"├ {code('/top d')} {code('/top n')} {code('/top m')} {code('/top y')} {code('/top all')}\n"
+    f"└ {code('/top 2026-02-01 2026-02-07')} — диапазон\n\n"
+
+    "🚫 <b>Баны</b>\n"
+    f"├ {code('/ban ID 2h причина')} — забанить\n"
+    f"├ {code('/unban ID')} — разбанить\n"
+    f"├ {code('/banlist')} — список банов\n"
+    f"└ {code('/baninfo ID')} — информация о бане\n\n"
+
+    "👑 <b>Администраторы</b>\n"
+    f"├ {code('/adminlist')} — список всех админов\n"
+    f"├ {code('/adminadd ID')} — добавить (только суперадмин)\n"
+    f"└ {code('/admindel ID')} — удалить (только суперадмин)\n\n"
+
+    "👤 <b>Пользователь</b>\n"
+    f"└ {code('/info ID')} — информация о пользователе\n\n"
+
+    "🗄 <b>База данных</b>\n"
+    f"├ {code('/dbfile')} — дамп БД файлом\n"
+    f"└ {code('/dblog')} — отчёт в лог-канал\n\n"
+
+    "📣 <b>Рассылка</b>\n"
+    f"├ {code('/broadcast текст')} — своя рассылка\n"
+    f"├ {code('/reminder_message')} — напоминание\n"
+    f"└ {code('/advertisement_message')} — реклама\n"
 )
 
 def admin_broadcast_confirm_kb(kind: str) -> InlineKeyboardMarkup:

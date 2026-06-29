@@ -149,33 +149,47 @@ def _admin_stats_range_text(start_dt: datetime, end_dt: datetime) -> str:
 
     title = (
         "📊 <b>Статистика: диапазон</b>\n"
-        f"<i>{start_dt.strftime('%d.%m.%Y')} - {end_dt.strftime('%d.%m.%Y')}</i>"
+        f"<i>{start_dt.strftime('%d.%m.%Y')} — {end_dt.strftime('%d.%m.%Y')}</i>"
     )
 
+    total_dl = video_ops + photo_ops + audio_sent
+    pct_active = f"{active_all * 100 / users_total:.1f}%" if users_total else "0%"
+
+    top_err_stages_sorted = sorted(err_stage.items(), key=lambda kv: int(kv[1]), reverse=True)
+    top_err_types_sorted = sorted(err_type.items(), key=lambda kv: int(kv[1]), reverse=True)[:5]
+
     text_parts = [
-        f"{title}\n\n"
-        f"👥 Пользователи всего: <b>{users_total}</b>\n"
-        f"🆕 Новых за период: <b>{users_new}</b>\n\n"
+        f"{title}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👥 <b>Пользователи</b>\n"
+        f"├ Всего: <b>{users_total}</b>\n"
+        f"└ Новых за период: <b>{users_new}</b>\n\n"
         f"⬇️ <b>Скачивания</b>\n"
-        f"🎬 Видео: <b>{video_ops}</b> операций (файлов: <b>{video_sent}</b>)\n"
-        f"🖼️ Фото: <b>{photo_ops}</b> операций (фото: <b>{photos_sent}</b>)\n"
-        f"🎵 Музыка: <b>{audio_sent}</b> шт\n"
-        f"📦 Всего: <b>{video_ops + photo_ops + audio_sent}</b> шт\n\n"
+        f"├ 🎬 Видео: <b>{video_ops}</b> операций (файлов: <b>{video_sent}</b>)\n"
+        f"├ 🖼️ Фото: <b>{photo_ops}</b> операций (фото: <b>{photos_sent}</b>)\n"
+        f"├ 🎵 Музыка: <b>{audio_sent}</b> шт\n"
+        f"└ 📦 Итого: <b>{total_dl}</b> шт\n\n"
         f"💥 <b>Ошибки</b>\n"
-        f"Всего: <b>{err_total}</b>\n"
-        f"По стадиям:\n{fmt_map(top_err_stages)}\n"
-        f"Топ типов:\n{fmt_map(top_err_types)}\n\n"
-        f"🚫 <b>Баны</b>\n"
-        f"Банов за период: <b>{bans_total}</b>\n"
-        f"Активных банов сейчас: <b>{active_bans}</b>\n"
-        f"⭐ <b>Stars</b>\n"
-        f"Донатов за период: <b>{stars_total} ⭐</b>\n\n"
+        f"├ Всего: <b>{err_total}</b>\n"
+    ]
+    if top_err_stages_sorted:
+        stage_lines = [f"│  {'└' if i == len(top_err_stages_sorted)-1 else '├'} {html_escape(str(k))}: <b>{int(v)}</b>" for i, (k, v) in enumerate(top_err_stages_sorted)]
+        text_parts.append("├ По стадиям:\n" + "\n".join(stage_lines) + "\n")
+    if top_err_types_sorted:
+        type_lines = [f"   {'└' if i == len(top_err_types_sorted)-1 else '├'} {html_escape(str(k))}: <b>{int(v)}</b>" for i, (k, v) in enumerate(top_err_types_sorted)]
+        text_parts.append("└ Топ типов:\n" + "\n".join(type_lines) + "\n")
+    text_parts.append(
+        f"\n🚫 <b>Баны</b>\n"
+        f"├ За период: <b>{bans_total}</b>\n"
+        f"└ Активных сейчас: <b>{active_bans}</b>\n\n"
+        f"⭐ <b>Звёзды (донаты)</b>\n"
+        f"└ За период: <b>{stars_total} ⭐</b>\n\n"
         f"📈 <b>Активность</b>\n"
-        f"Активных (скачивали): <b>{active_all}/{users_total}</b>\n"
-        f"Активных по видео: <b>{active_video_all}/{users_total}</b>\n\n"
+        f"├ Скачивали: <b>{active_all}</b> / <b>{users_total}</b> ({pct_active})\n"
+        f"└ Из них по видео: <b>{active_video_all}</b> / <b>{users_total}</b>\n\n"
         f"🏆 <b>Топ скачиваний</b>\n{fmt_top_downloaders()}\n\n"
         f"🏆 <b>Топ донатеров</b>\n{fmt_top_don()}\n\n"
-    ]
+    )
     return "".join(text_parts)
 
 def _user_stats_range_text(uid: int, start_dt: datetime, end_dt: datetime) -> str:
@@ -308,41 +322,52 @@ def _admin_stats_text(mode: str) -> str:
         users_new_all = int((stats_root.get("all", {}) or {}).get("users_new", 0))
         users_new_block = (
             "🆕 <b>Новые пользователи</b>\n"
-            f"• Сегодня: <b>{users_new_day}</b>\n"
-            f"• Неделя: <b>{users_new_week}</b>\n"
-            f"• Месяц: <b>{users_new_month}</b>\n"
-            f"• Год: <b>{users_new_year}</b>\n"
-            f"• Всего: <b>{users_new_all}</b>\n"
+            f"├ Сегодня: <b>{users_new_day}</b>\n"
+            f"├ Неделя: <b>{users_new_week}</b>\n"
+            f"├ Месяц: <b>{users_new_month}</b>\n"
+            f"├ Год: <b>{users_new_year}</b>\n"
+            f"└ Всего: <b>{users_new_all}</b>\n"
         )
     else:
         users_new_block = f"🆕 Новых за период: <b>{users_new}</b>\n"
 
+    total_dl = video_ops + photo_ops + audio_sent
+    pct_active = f"{active_all * 100 / users_total:.1f}%" if users_total else "0%"
+
     text_parts = [
-        f"{title}\n\n"
-        f"👥 Пользователи всего: <b>{users_total}</b>\n"
+        f"{title}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👥 <b>Пользователи</b>\n"
+        f"└ Всего: <b>{users_total}</b>\n\n"
         f"{users_new_block}\n"
         f"⬇️ <b>Скачивания</b>\n"
-        f"🎬 Видео: <b>{video_ops}</b> операций (файлов: <b>{video_sent}</b>)\n"
-        f"🖼️ Фото: <b>{photo_ops}</b> операций (фото: <b>{photos_sent}</b>)\n"
-        f"🎵 Музыка: <b>{audio_sent}</b> шт\n"
-        f"📦 Всего: <b>{video_ops + photo_ops + audio_sent}</b> шт\n\n"
+        f"├ 🎬 Видео: <b>{video_ops}</b> операций (файлов: <b>{video_sent}</b>)\n"
+        f"├ 🖼️ Фото: <b>{photo_ops}</b> операций (фото: <b>{photos_sent}</b>)\n"
+        f"├ 🎵 Музыка: <b>{audio_sent}</b> шт\n"
+        f"└ 📦 Итого: <b>{total_dl}</b> шт\n\n"
         f"💥 <b>Ошибки</b>\n"
-        f"Всего: <b>{err_total}</b>\n"
-        f"По стадиям:\n{fmt_map(top_err_stages)}\n"
-        f"Топ типов:\n{fmt_map(top_err_types)}\n\n"
-        f"🚫 <b>Баны</b>\n"
-        f"Банов за период: <b>{bans_total}</b>\n"
-        f"Активных банов сейчас: <b>{active_bans}</b>\n"
-        f"⭐ <b>Stars</b>\n"
-        f"Донатов за период: <b>{stars_total} ⭐</b>\n"
+        f"├ Всего: <b>{err_total}</b>\n"
     ]
+    if top_err_stages:
+        stage_lines = [f"│  {'└' if i == len(top_err_stages)-1 else '├'} {html_escape(str(k))}: <b>{int(v)}</b>" for i, (k, v) in enumerate(top_err_stages)]
+        text_parts.append("├ По стадиям:\n" + "\n".join(stage_lines) + "\n")
+    if top_err_types:
+        type_lines = [f"   {'└' if i == len(top_err_types)-1 else '├'} {html_escape(str(k))}: <b>{int(v)}</b>" for i, (k, v) in enumerate(top_err_types)]
+        text_parts.append("└ Топ типов:\n" + "\n".join(type_lines) + "\n")
+    text_parts.append(
+        f"\n🚫 <b>Баны</b>\n"
+        f"├ За период: <b>{bans_total}</b>\n"
+        f"└ Активных сейчас: <b>{active_bans}</b>\n\n"
+        f"⭐ <b>Звёзды (донаты)</b>\n"
+        f"└ За период: <b>{stars_total} ⭐</b>\n"
+    )
     if mode == "all":
         text_parts.append(
-            "\n📈 <b>Активность (all)</b>\n"
-            f"Активных (скачивали): <b>{active_all}/{users_total}</b>\n"
-            f"Активных по видео: <b>{active_video_all}/{users_total}</b>\n\n"
-            f"🏆 <b>Топ скачиваний (all)</b>\n{fmt_top_downloaders()}\n\n"
-            f"🏆 <b>Топ донатеров (all)</b>\n{fmt_top_don()}\n\n"
+            f"\n📈 <b>Активность</b>\n"
+            f"├ Скачивали: <b>{active_all}</b> / <b>{users_total}</b> ({pct_active})\n"
+            f"└ Из них по видео: <b>{active_video_all}</b> / <b>{users_total}</b>\n\n"
+            f"🏆 <b>Топ скачиваний</b>\n{fmt_top_downloaders()}\n\n"
+            f"🏆 <b>Топ донатеров</b>\n{fmt_top_don()}\n\n"
         )
     return "".join(text_parts)
 
