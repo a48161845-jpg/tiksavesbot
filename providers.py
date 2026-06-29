@@ -21,6 +21,10 @@ from storage import store
 from logging_channel import log_event
 
 
+class _FileTooLargeError(Exception):
+    """Внутренний сигнал: файл превышает лимит. Не логируется как dlerr."""
+
+
 # ================== PROVIDERS ==================
 @dataclass
 class MediaInfo:
@@ -161,6 +165,9 @@ class TikWMClient(BaseProvider):
                 async with self.session.get(url, headers=headers, allow_redirects=True) as resp:
                     resp.raise_for_status()
                     total = resp.content_length or 0
+                    # Проверяем Content-Length заранее — не тратим трафик
+                    if total > max_bytes:
+                        raise _FileTooLargeError(f"File too large (> {max_bytes} bytes)")
                     with tmp.open("wb") as f:
                         async for chunk in resp.content.iter_chunked(1024 * 64):
                             if not chunk:
@@ -169,7 +176,7 @@ class TikWMClient(BaseProvider):
                                 raise RuntimeError("Cancelled")
                             size += len(chunk)
                             if size > max_bytes:
-                                raise RuntimeError(f"File too large (> {max_bytes} bytes)")
+                                raise _FileTooLargeError(f"File too large (> {max_bytes} bytes)")
                             f.write(chunk)
                             if progress_cb and total > 0:
                                 progress = int(size * 100 / total)
@@ -178,6 +185,11 @@ class TikWMClient(BaseProvider):
                 tmp.replace(path)
                 return size
 
+            except _FileTooLargeError:
+                # Файл слишком большой — не логируем как ошибку, сразу бросаем
+                with contextlib.suppress(Exception):
+                    tmp.unlink(missing_ok=True)
+                raise RuntimeError(f"File too large (> {max_bytes} bytes)")
             except (ClientPayloadError, aiohttp.ClientConnectionError, aiohttp.ServerDisconnectedError,
                     asyncio.TimeoutError, aiohttp.ClientOSError, aiohttp.ClientResponseError) as e:
                 last_err = e

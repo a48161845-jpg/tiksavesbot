@@ -125,7 +125,8 @@ def clamp_reason(e: Exception, limit: int = 220) -> str:
     return s
 
 def is_admin(uid: int) -> bool:
-    return uid in ADMINS
+    from storage import store
+    return uid in ADMINS or uid in store.data.get("admins_extra", [])
 
 def is_tiktok(text: str) -> bool:
     return bool(TIKTOK_RE.search(text or ""))

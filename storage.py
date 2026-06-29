@@ -78,27 +78,8 @@ async def _db_get_all() -> Dict[str, Any]:
 
 # =================== MIGRATION ===================
 async def _maybe_migrate() -> None:
-    """Если data.json существует и ещё не мигрирован — переносим."""
-    if not DATA_FILE.exists():
-        return
-    migrated = await _db_get("__migrated__")
-    if migrated:
-        return
-    log.info("DB: начинаем миграцию из data.json …")
-    try:
-        raw = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    except Exception as e:
-        log.error("DB migrate: не удалось прочитать data.json: %s", e)
-        return
-
-    # Сохраняем каждый top-level ключ отдельно
-    for k, v in raw.items():
-        await _db_set(k, v)
-
-    await _db_set("__migrated__", True)
-    log.info("DB: миграция завершена (%d ключей)", len(raw))
-    # Переименовываем JSON, чтобы не мигрировать повторно
-    DATA_FILE.rename(DATA_FILE.with_suffix(".json.bak"))
+    """Миграция из data.json отключена — используем только PostgreSQL."""
+    pass
 
 
 # =================== STORAGE CLASS ===================
@@ -127,6 +108,8 @@ class Storage:
             "log_seq_map": {},
             "first_seen": {},
             "last_seen": {},
+            "admins_extra": [],  # дополнительные админы (кроме ADMINS из config)
+            "users_info": {},    # актуальные данные профиля: {uid: {username, first_name, last_name}}
             "stats": {
                 "d": {}, "n": {}, "m": {}, "y": {},
                 "all": {
@@ -431,6 +414,26 @@ class Storage:
                 continue
         out.sort(key=lambda x: x[1])
         return out
+
+    # ---------- admins ----------
+    def get_extra_admins(self) -> list:
+        return list(self.data.get("admins_extra", []))
+
+    def add_extra_admin(self, uid: int) -> bool:
+        lst = self.data.setdefault("admins_extra", [])
+        if uid in lst:
+            return False
+        lst.append(uid)
+        self._mark_dirty()
+        return True
+
+    def del_extra_admin(self, uid: int) -> bool:
+        lst = self.data.get("admins_extra", [])
+        if uid not in lst:
+            return False
+        lst.remove(uid)
+        self._mark_dirty()
+        return True
 
     # ---------- log seq ----------
     def next_seq(self, category: str) -> int:

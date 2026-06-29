@@ -97,6 +97,13 @@ async def send_video_smart(
                 cancel_cb=cancel_cb,
             )
             await message.answer_video(FSInputFile(tmp), caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+        except RuntimeError as e:
+            if "file too large" in str(e).lower():
+                with contextlib.suppress(Exception):
+                    if progress_msg and progress_msg != status_msg:
+                        await progress_msg.delete()
+                raise  # перебрасываем — main_handler тихо обработает
+            raise
         finally:
             with contextlib.suppress(Exception):
                 tmp.unlink(missing_ok=True)
