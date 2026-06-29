@@ -109,6 +109,28 @@ async def admin_cb(call: CallbackQuery):
         await call.answer("Ок")
         return
 
+    if cmd == "adminlist":
+        from config import ADMINS
+        lines = ["👑 <b>Администраторы</b>\n━━━━━━━━━━━━━━━━━━━━\n"]
+        lines.append("🔒 <b>Суперадмины:</b>")
+        for aid in sorted(ADMINS):
+            lbl = store.get_user_label(aid)
+            lines.append(f"  └ <b>{format_user_for_log(lbl, aid)}</b>")
+        extra = store.get_extra_admins()
+        lines.append(f"\n➕ <b>Дополнительные ({len(extra)}):</b>")
+        if extra:
+            for aid in sorted(extra):
+                lbl = store.get_user_label(aid)
+                lines.append(f"  └ <b>{format_user_for_log(lbl, aid)}</b>")
+        else:
+            lines.append("  <i>нет</i>")
+        lines.append(f"\n<i>Управление: /adminadd ID · /admindel ID</i>")
+        if call.message:
+            with contextlib.suppress(Exception):
+                await call.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=admin_back_kb())
+        await call.answer("Ок")
+        return
+
     if cmd == "dbfile":
         await log_admin_action_to_channel(call.bot, "Дамп БД (кнопка)", [f"👤 Кто: <b>{format_user_for_log(label, uid)}</b>"])
         await call.answer("Формирую дамп…")
