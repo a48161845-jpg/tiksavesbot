@@ -78,8 +78,34 @@ async def _db_get_all() -> Dict[str, Any]:
 
 # =================== MIGRATION ===================
 async def _maybe_migrate() -> None:
-    """Миграция из data.json отключена — используем только PostgreSQL."""
-    pass
+    if not DATA_FILE.exists():
+        return
+
+    async with _pool.acquire() as conn:
+        count = await conn.fetchval(
+            "SELECT COUNT(*) FROM bot_kv"
+        )
+
+        if count > 0:
+            return
+
+    try:
+        raw = json.loads(
+            DATA_FILE.read_text(encoding="utf-8")
+        )
+
+        for key, value in raw.items():
+            await _db_set(key, value)
+
+        log.info(
+            "DB: данные из data.json импортированы"
+        )
+
+    except Exception as e:
+        log.error(
+            "DB migration error: %s",
+            e
+        )
 
 
 # =================== STORAGE CLASS ===================
