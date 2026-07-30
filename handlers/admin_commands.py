@@ -300,6 +300,60 @@ async def info_cmd(message: Message):
     )
 
 
+def _extract_broadcast_html(message: Message) -> Optional[str]:
+    """
+    Достаёт текст рассылки из "/broadcast <текст>" с сохранением форматирования
+    (жирный/курсив/моно/ссылки и т.п.), применённого через выделение текста.
+
+    Раньше здесь сдвиг entity считался неверно: entity.offset/length у Telegram
+    заданы в UTF-16 code units, а код сравнивал/резал их как обычные питоновские
+    индексы символов. Из-за этого на текстах с эмодзи (они занимают 2 UTF-16
+    unit, а не 1 символ) разметка съезжала или отсекалась совсем — рассылка
+    вместо форматированного текста уходила голым текстом или падала с ошибкой.
+    Теперь весь сдвиг считается в UTF-16 units, как и положено.
+    """
+    from aiogram.utils.text_decorations import html_decoration
+
+    msg_text = message.text or ""
+    msg_entities = message.entities or []
+
+    cmd_end = msg_text.find(" ")
+    if cmd_end == -1:
+        return None
+
+    # "/broadcast" и пробелы до текста — чистый ASCII, поэтому питоновский
+    # индекс здесь совпадает с UTF-16 offset (1 символ = 1 unit).
+    text_offset_units = cmd_end + 1
+    broadcast_raw = msg_text[text_offset_units:]
+    lstripped = broadcast_raw.lstrip()
+    if not lstripped:
+        return None
+    text_offset_units += len(broadcast_raw) - len(lstripped)
+    broadcast_raw = lstripped
+
+    # Длина итогового текста в UTF-16 code units (а не в питоновских символах!) —
+    # нужна, чтобы правильно обрезать entity, которые вылезают за конец текста.
+    raw_len_units = len(broadcast_raw.encode("utf-16-le")) // 2
+
+    shifted_entities = []
+    for ent in msg_entities:
+        ent_start = ent.offset
+        ent_end = ent.offset + ent.length
+        if ent_end <= text_offset_units:
+            continue  # entity целиком внутри "/broadcast ", пропускаем
+        new_offset = max(0, ent_start - text_offset_units)
+        new_length = min(ent.length, raw_len_units - new_offset)
+        if new_length <= 0:
+            continue
+        shifted_ent = type(ent)(**{**ent.model_dump(), "offset": new_offset, "length": new_length})
+        shifted_entities.append(shifted_ent)
+
+    try:
+        return html_decoration.unparse(broadcast_raw, shifted_entities)
+    except Exception:
+        return html_escape(broadcast_raw)
+
+
 @dp.message(Command("broadcast"))
 async def broadcast_cmd(message: Message):
     admin_id = message.from_user.id
@@ -311,50 +365,10 @@ async def broadcast_cmd(message: Message):
     if not await gate_message(message, admin_label):
         return
 
-    # Extract text after /broadcast, preserving Telegram entities as HTML
-    from aiogram.utils.text_decorations import html_decoration
-    msg_text = message.text or ""
-    msg_entities = message.entities or []
-
-    # Find where the command word ends (first space after /broadcast)
-    cmd_end = msg_text.find(" ")
-    if cmd_end == -1:
+    broadcast_html = _extract_broadcast_html(message)
+    if not broadcast_html:
         await message.answer("❌ Пример:\n" f"{code('/broadcast Текст рассылки')}", parse_mode="HTML")
         return
-
-    # text_offset is the character position where broadcast text begins (skip leading spaces)
-    text_offset = cmd_end + 1
-    broadcast_raw = msg_text[text_offset:]
-    # Strip leading whitespace and adjust offset accordingly
-    lstripped = broadcast_raw.lstrip()
-    if not lstripped:
-        await message.answer("❌ Пример:\n" f"{code('/broadcast Текст рассылки')}", parse_mode="HTML")
-        return
-    text_offset += len(broadcast_raw) - len(lstripped)
-    broadcast_raw = lstripped
-
-    # Shift and filter entities that belong to broadcast text (after the command)
-    shifted_entities = []
-    for ent in msg_entities:
-        ent_start = ent.offset
-        ent_end = ent.offset + ent.length
-        if ent_end <= text_offset:
-            continue  # entity is part of the command word, skip
-        new_offset = max(0, ent_start - text_offset)
-        # Clamp length so entity doesn't go out of broadcast_raw bounds
-        new_length = min(ent.length, len(broadcast_raw) - new_offset)
-        if new_length <= 0:
-            continue
-        shifted_ent = type(ent)(
-            **{**ent.model_dump(), "offset": new_offset, "length": new_length}
-        )
-        shifted_entities.append(shifted_ent)
-
-    # Convert entities to HTML
-    try:
-        broadcast_html = html_decoration.unparse(broadcast_raw, shifted_entities)
-    except Exception:
-        broadcast_html = html_escape(broadcast_raw)
 
     pending_admin_broadcast[admin_id] = "custom"
     pending_admin_broadcast_text[admin_id] = broadcast_html
@@ -492,12 +506,13 @@ async def adminadd_cmd(message: Message):
     log_admin(admin_id, "adminadd", f"target={uid} success={added}")
 
     if added:
-        await log_admin_action_to_channel(
+        await log_event(
             message.bot,
-            "Добавление администратора",
+            "adminadd",
             [
+                "👑 Категория: <b>Назначение администратора</b>",
                 f"👤 Кто: <b>{format_user_for_log(admin_label, admin_id)}</b>",
-                f"👑 Новый адм: <b>{format_user_for_log(target_label, uid)}</b>",
+                f"➕ Новый админ: <b>{format_user_for_log(target_label, uid)}</b>",
             ],
         )
         await message.answer(
@@ -537,17 +552,19 @@ async def admindel_cmd(message: Message):
         await message.answer("❌ Нельзя удалить суперадмина (прописан в config).", parse_mode="HTML")
         return
 
-    target_label = store.get_user_label(uid)
+    target_label = await resolve_user_label(message.bot, uid)
+    store.set_user_label(uid, target_label)
     removed = store.del_extra_admin(uid)
     log_admin(admin_id, "admindel", f"target={uid} success={removed}")
 
     if removed:
-        await log_admin_action_to_channel(
+        await log_event(
             message.bot,
-            "Удаление администратора",
+            "admindel",
             [
+                "🚫 Категория: <b>Снятие администратора</b>",
                 f"👤 Кто: <b>{format_user_for_log(admin_label, admin_id)}</b>",
-                f"🚫 Удалён адм: <b>{format_user_for_log(target_label, uid)}</b>",
+                f"➖ Снят админ: <b>{format_user_for_log(target_label, uid)}</b>",
             ],
         )
         await message.answer(
