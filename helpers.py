@@ -124,6 +124,10 @@ def clamp_reason(e: Exception, limit: int = 220) -> str:
         s = s[:limit - 3] + "..."
     return s
 
+def exc_type_name(e: Exception) -> str:
+    """Имя класса исключения — для подробных логов ошибок."""
+    return e.__class__.__name__
+
 def is_admin(uid: int) -> bool:
     from storage import store
     return uid in ADMINS or uid in store.data.get("admins_extra", [])

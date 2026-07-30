@@ -57,7 +57,9 @@ STARS_MAX = int(os.getenv("STARS_MAX", "1000"))
 WAITING_STARS_TTL_SEC = 120
 
 # ========= GLOBAL LIMITS =========
-GLOBAL_CONCURRENCY = 1
+# Сколько скачиваний могут обрабатываться параллельно (а не одно за другим).
+# Раньше было = 1 (строгая очередь "один за раз, ~раз в минуту").
+GLOBAL_CONCURRENCY = int(os.getenv("GLOBAL_CONCURRENCY", "8"))
 
 # ========= SPAM LIMIT (тихий cooldown, без страйков) =========
 EVENT_WINDOW_SEC = 15
@@ -75,6 +77,11 @@ PHOTO_LIMIT_PER_MIN = 120
 # ========= AUTOSAVE =========
 AUTO_SAVE_INTERVAL_SEC = 5  # автосинхронизация раз в N сек
 
+# ========= DESCRIPTION (CAPTION TEXT) =========
+# Если описание видео влезает в это ограничение — шлём сообщением,
+# иначе — файлом (.txt), чтобы не обрезать текст.
+DESCRIPTION_TG_LIMIT = 3500
+
 # ========= VIDEO/AUDIO FALLBACK DOWNLOAD =========
 MAX_VIDEO_MB = int(os.getenv("MAX_VIDEO_MB", "60"))
 MAX_VIDEO_BYTES = MAX_VIDEO_MB * 1024 * 1024
@@ -90,6 +97,12 @@ API_FALLBACK_COOLDOWN_SEC = 180
 ALT_PROVIDER = os.getenv("ALT_PROVIDER", "none").strip().lower()
 APIFY_TOKEN = os.getenv("APIFY_TOKEN", "").strip()
 APIFY_ACTOR = os.getenv("APIFY_ACTOR", "apilabs/tiktok-downloader").strip()
+
+# Бесплатный запасной источник без ключа (доп. звено цепочки провайдеров).
+# Если у него сменится схема ответа/адрес — можно выключить через .env
+# (ENABLE_TIKLYDOWN=0), не трогая код.
+TIKLYDOWN_URL = os.getenv("TIKLYDOWN_URL", "https://api.tiklydown.eu.org/api/download").strip()
+ENABLE_TIKLYDOWN = os.getenv("ENABLE_TIKLYDOWN", "1").strip() != "0"
 
 BAN_DURATION_SEC = int(os.getenv("BAN_DURATION_SEC", str(24 * 3600)))  # 24 часа по умолчанию
 BAN_REASON_SPAM = "Авто-бан: спам/флуд"
@@ -116,6 +129,27 @@ PHOTO_WARNING_TEXT = (
 MSG_SPAM = "🛡 Флуд. Подожди ~{n} сек."
 MSG_DL = "⏳ Лимит скачиваний. Подожди ~{n} сек."
 MSG_PHOTO = "📸 Лимит фото. Подожди ~{n} сек."
+
+# ========= РЕФЕРАЛЬНАЯ СИСТЕМА / МАГАЗИН ПОДАРКОВ =========
+BOT_USERNAME = os.getenv("BOT_USERNAME", "tiksavesbot").strip().lstrip("@")
+REF_POINTS_PER_REFERRAL = int(os.getenv("REF_POINTS_PER_REFERRAL", "10"))
+REF_TOP_LIMIT = int(os.getenv("REF_TOP_LIMIT", "10"))
+
+# Каталог подарков: ключ, эмодзи, название, цена в баллах.
+# Выдаются вручную администрацией — тут только учёт заявок/баланса.
+GIFTS = [
+    {"key": "heart",     "emoji": "❤️", "name": "Сердечко",   "price": 100},
+    {"key": "bear",      "emoji": "🧸", "name": "Мишка",      "price": 100},
+    {"key": "rose",      "emoji": "🌹", "name": "Роза",       "price": 200},
+    {"key": "giftbox",   "emoji": "🎁", "name": "Подарок",    "price": 200},
+    {"key": "champagne", "emoji": "🥂", "name": "Шампанское", "price": 500},
+    {"key": "cake",      "emoji": "🍰", "name": "Тортик",     "price": 500},
+    {"key": "rocket",    "emoji": "🚀", "name": "Ракета",     "price": 500},
+    {"key": "diamond",   "emoji": "💎", "name": "Алмаз",      "price": 1000},
+    {"key": "ring",      "emoji": "💍", "name": "Кольцо",     "price": 1000},
+    {"key": "trophy",    "emoji": "🏆", "name": "Кубок",      "price": 1000},
+]
+GIFTS_BY_KEY = {g["key"]: g for g in GIFTS}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("tiktok_bot")

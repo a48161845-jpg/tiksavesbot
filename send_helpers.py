@@ -20,8 +20,9 @@ from config import (
     ALBUM_PAUSE_MAX,
     MAX_VIDEO_BYTES,
     MAX_AUDIO_BYTES,
+    DESCRIPTION_TG_LIMIT,
 )
-from helpers import html_escape, code, clamp_reason
+from helpers import html_escape, code, clamp_reason, exc_type_name
 from storage import store
 from providers import BaseProvider
 from logging_channel import log_event, format_user_for_log
@@ -170,6 +171,7 @@ async def send_music_if_any(
                         "❌ Категория: <b>Ошибка скачивания</b>",
                         f"👤 User/id: <b>{format_user_for_log(label, user_id)}</b>",
                         "🧩 Стадия: <b>audio</b>",
+                        f"🧬 Тип: <b>{html_escape(exc_type_name(fallback_err))}</b>",
                         f"🔗 Ссылка: {code(src or '')}" if src else "🔗 Ссылка: -",
                         f"🧨 Причина: <b>{html_escape(clamp_reason(fallback_err))}</b>",
                     ],
@@ -178,3 +180,49 @@ async def send_music_if_any(
         finally:
             with contextlib.suppress(Exception):
                 tmp.unlink(missing_ok=True)
+
+
+async def send_description_if_any(message: Message, description: Optional[str]) -> None:
+    """
+    Отправляет описание (подпись/caption) TikTok-видео так же, как музыку:
+    - если текст помещается в сообщение Telegram — шлём моно-блоком (<pre>),
+      чтобы его можно было скопировать целиком тапом, как код;
+    - если текст слишком большой — шлём файлом (.txt).
+    Содержимое не меняется (экранируем только служебные HTML-символы,
+    чтобы Telegram не пытался распарсить их как разметку — раньше из-за
+    этого длинные описания с "&"/"<"/">" молча не отправлялись).
+    """
+    if not description:
+        return
+    text = description.strip()
+    if not text:
+        return
+
+    try:
+        if len(text) <= DESCRIPTION_TG_LIMIT:
+            await message.answer(f"<pre>{html_escape(text)}</pre>", parse_mode="HTML")
+            return
+
+        tmp = Path(f"tmp_description_{message.chat.id}_{int(time.time())}.txt")
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            await message.answer_document(FSInputFile(tmp, filename="description.txt"))
+        finally:
+            with contextlib.suppress(Exception):
+                tmp.unlink(missing_ok=True)
+    except Exception as e:
+        # Раньше ошибка тут проглатывалась молча — пользователь ничего не видел.
+        # Теперь сообщаем и логируем причину.
+        with contextlib.suppress(Exception):
+            await message.answer("❌ Не удалось отправить описание. Попробуй ещё раз.")
+        with contextlib.suppress(Exception):
+            await log_event(
+                message.bot,
+                "dlerr",
+                [
+                    "❌ Категория: <b>Ошибка скачивания</b>",
+                    "🧩 Стадия: <b>description</b>",
+                    f"🧬 Тип: <b>{html_escape(exc_type_name(e))}</b>",
+                    f"🧨 Причина: <b>{html_escape(clamp_reason(e))}</b>",
+                ],
+            )

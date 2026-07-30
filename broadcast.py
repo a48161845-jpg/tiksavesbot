@@ -176,20 +176,21 @@ def _broadcast_state() -> Dict[str, str]:
 
 
 async def broadcast_schedule_loop(bot: Bot) -> None:
-    # Рассылки раз в 4 дня: напоминание в 15:00, реклама бота в 20:00
+    # Напоминание — раз в неделю (в 15:00); реклама бота — раз в 4 дня (в 20:00)
     while True:
         try:
             now = msk_now()
             today_str = now.strftime("%Y-%m-%d")
+            week_mod = now.date().toordinal() % 7
             day_mod = now.date().toordinal() % 4
             state = _broadcast_state()
 
-            if now.hour == 15 and now.minute == 0 and day_mod == 0:
+            if now.hour == 15 and now.minute == 0 and week_mod == 0:
                 if state.get("last_reminder") != today_str:
                     await do_broadcast_system(bot, "reminder", REMINDER_MSG)
                     state["last_reminder"] = today_str
                     store._mark_dirty()
-                    log.info("broadcast: reminder sent at 15:00 (4-day cycle)")
+                    log.info("broadcast: reminder sent at 15:00 (weekly cycle)")
 
             if now.hour == 20 and now.minute == 0 and day_mod == 0:
                 if state.get("last_advert") != today_str:

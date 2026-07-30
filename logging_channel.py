@@ -48,14 +48,28 @@ CAT_TAG = {
     "autoban": "autoban",
     "userban": "userban",
     "userunban": "userunban",
+    "adminadd": "adminadd",
+    "admindel": "admindel",
+    "providerfallback": "providerfallback",
     "stars": "stars",
     "broadcast": "broadcast",
     "admin": "admin",
 }
 
-# Категории, которые не несут ценности в лог-канале (открытие меню и т.п.) —
-# в канал они не шлются, чтобы не засорять его.
-QUIET_CATEGORIES = {"support", "donate_open", "userstats"}
+# Упрощённые логи: в канал шлём только то, что реально важно —
+# ошибки скачивания, баны/разбаны (ручные и авто) и назначение/снятие
+# администраторов. Всё остальное (скачивания видео/фото/музыки,
+# открытие меню, статистика, рассылки, просмотр админ-панели и т.п.)
+# в канал больше не шлётся — только считается в статистику/БД.
+ALLOWED_LOG_CATEGORIES = {
+    "dlerr",
+    "userban",
+    "userunban",
+    "autoban",
+    "adminadd",
+    "admindel",
+    "providerfallback",
+}
 
 def base_tag_for(category: str) -> str:
     return f"#{CAT_TAG.get(category, 'log')}"
@@ -65,15 +79,30 @@ def numbered_tag_for(category: str) -> str:
     return f"#{CAT_TAG.get(category, 'log')}{seq}"
 
 def format_user_for_log(label: str, uid: int) -> str:
-    """Кликабельное упоминание: имя/юзернейм со ссылкой на профиль."""
+    """
+    Кликабельное упоминание пользователя для логов.
+
+    Важный нюанс Telegram: бот может узнать имя/юзернейм только у тех,
+    кто хотя бы раз ему писал (или есть в кэше store) — так устроен Bot API,
+    это не баг бота. Если имени нет — показываем просто ID один раз
+    (раньше в этом случае ID дублировался: "12345 (12345)").
+
+    Если известен @username — ссылка на https://t.me/username (работает
+    всегда, у любого клиента). Если известны только имя/фамилия —
+    tg://user?id=... (best-effort упоминание, кликабельно не всегда —
+    тоже ограничение Telegram, а не бота).
+    """
     s = (label or "").strip()
     m = re.search(r"\((\d+)\)\s*$", s)
-    name_part = s
-    if m:
-        name_part = s[:m.start()].strip()
-    if not name_part:
-        name_part = str(uid)
-    # <a href="tg://user?id=..."> — кликабельно в Telegram (HTML parse mode)
+    name_part = s[:m.start()].strip() if m else s
+
+    if not name_part or name_part == str(uid):
+        return code(uid)
+
+    if name_part.startswith("@"):
+        username = name_part[1:]
+        return f'<a href="https://t.me/{username}">{html_escape(name_part)}</a> ({code(uid)})'
+
     return f'<a href="tg://user?id={uid}">{html_escape(name_part)}</a> ({code(uid)})'
 
 _log_queue: "asyncio.Queue[Tuple[int, str]]" = asyncio.Queue(maxsize=2000)
@@ -125,7 +154,7 @@ async def send_channel_log(_bot: Bot, text: str) -> None:
         pass
 
 async def log_event(bot: Bot, category: str, lines: List[str]) -> None:
-    if category in QUIET_CATEGORIES:
+    if category not in ALLOWED_LOG_CATEGORIES:
         return
     t_base = base_tag_for(category)
     t_num = numbered_tag_for(category)
