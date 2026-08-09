@@ -9,11 +9,40 @@ from typing import Optional, Dict, Any, List
 import aiohttp
 from datetime import datetime, timezone, timedelta
 
-from config import MSK_TZ, TIKTOK_RE, ADMINS
+from config import MSK_TZ, TIKTOK_RE, YOUTUBE_RE, INSTAGRAM_RE, VK_RE, PINTEREST_RE, ADMINS
 
 # ================== HTML FORMATTING ==================
 def html_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def plain(s: str) -> str:
+    """Убирает HTML-теги — для мест, где разметка не поддерживается (алерты callback.answer)."""
+    return re.sub(r"<[^>]+>", "", s or "")
+
+_TAG_GLUE_RE = re.compile(r"(?<=\S)(?=[#@])")
+_MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
+_TRAILING_TAGS_RE = re.compile(r"[ \t]+((?:[#@]\S+[ \t]*){2,})$")
+
+def normalize_description(text: Optional[str]) -> Optional[str]:
+    """
+    Скрейперы/API (tikwm, yt-dlp и т.п.) иногда отдают описание с хэштегами,
+    склеенными друг с другом и с текстом без пробелов — "текст#тег1#тег2"
+    вместо "текст #тег1 #тег2". Расклеиваем: вставляем пробел перед каждым
+    "#"/"@", если перед ним нет пробела, и схлопываем случайные повторные
+    пробелы (переносы строк не трогаем).
+
+    Дополнительно: если в конце описания идёт "хвост" из 2+ хэштегов/упоминаний
+    подряд (частый паттерн — основной текст, потом блок тегов), отделяем его
+    пустой строкой от текста, как обычно и выглядит в самих приложениях.
+    """
+    if not text:
+        return text
+    t = _TAG_GLUE_RE.sub(" ", text)
+    t = _MULTI_SPACE_RE.sub(" ", t)
+    m = _TRAILING_TAGS_RE.search(t)
+    if m:
+        t = t[: m.start()] + "\n\n" + m.group(1).strip()
+    return t.strip()
 
 def code(s: Any) -> str:
     return f"<code>{html_escape(str(s))}</code>"
@@ -165,6 +194,68 @@ def normalize_tiktok_url(url: str) -> str:
         base = u.split("?", 1)[0]
         return base
     return u
+
+def is_youtube(text: str) -> bool:
+    return bool(YOUTUBE_RE.search(text or ""))
+
+def extract_youtube_url(text: str) -> Optional[str]:
+    if not text:
+        return None
+    m = re.search(r"https?://\S+", text)
+    if m:
+        url = m.group(0)
+        return url if is_youtube(url) else None
+    # maybe without scheme
+    m2 = YOUTUBE_RE.search(text)
+    if m2:
+        url = text[m2.start():].split()[0]
+        if not url.startswith("http"):
+            url = "https://" + url
+        return url
+    return None
+
+def normalize_youtube_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return u
+    if u[0] in "<([" and u[-1] in ">)]":
+        u = u[1:-1].strip()
+    while u and u[-1] in ".,;!?)\"]}":
+        u = u[:-1]
+    if not u.startswith("http"):
+        u = "https://" + u
+    # В отличие от TikTok, у YouTube query-параметры значимы (?v=ID) —
+    # обрезать их нельзя, поэтому просто возвращаем как есть после очистки.
+    return u
+
+def is_instagram(text: str) -> bool:
+    return bool(INSTAGRAM_RE.search(text or ""))
+
+def is_vk(text: str) -> bool:
+    return bool(VK_RE.search(text or ""))
+
+def is_pinterest(text: str) -> bool:
+    return bool(PINTEREST_RE.search(text or ""))
+
+def is_other_source(text: str) -> bool:
+    """Instagram / VK / Pinterest — всё, что скачивается через тот же движок, что и YouTube."""
+    return is_instagram(text) or is_vk(text) or is_pinterest(text)
+
+def extract_other_source_url(text: str) -> Optional[str]:
+    if not text:
+        return None
+    m = re.search(r"https?://\S+", text)
+    if m:
+        url = m.group(0)
+        return url if is_other_source(url) else None
+    for rx in (INSTAGRAM_RE, VK_RE, PINTEREST_RE):
+        m2 = rx.search(text)
+        if m2:
+            url = text[m2.start():].split()[0]
+            if not url.startswith("http"):
+                url = "https://" + url
+            return url
+    return None
 
 async def resolve_tiktok_redirect(session: aiohttp.ClientSession, url: str) -> str:
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "*/*"}

@@ -8,9 +8,6 @@
 """
 import json
 import time
-import asyncio
-import logging
-from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 
 import asyncpg
@@ -129,6 +126,8 @@ class Storage:
             # ---- магазин подарков ----
             "gift_requests": {},   # req_id_str -> {"user_id","gift_key","gift_name","gift_price","status","created_at","updated_at"}
             "gift_requests_seq": 0,
+            "download_counters": {},  # uid_str -> общее кол-во скачиваний (для напоминаний про /ref)
+            "inline_cache": {},  # url_hash -> {"file_id","kind","ts"} — кэш для inline-режима
         }
 
     # ---------- async load ----------
@@ -204,6 +203,42 @@ class Storage:
     async def save_unthrottled(self) -> None:
         await self._flush()
 
+    # ---------- inline mode cache ----------
+    def get_inline_cache(self, key: str) -> Optional[Dict[str, Any]]:
+        """Кэш file_id для inline-режима (по хэшу нормализованной ссылки) — чтобы не качать повторно."""
+        rec = self.data.get("inline_cache", {}).get(key)
+        return dict(rec) if rec else None
+
+    def set_inline_cache(self, key: str, file_id: str, kind: str = "video") -> None:
+        cache = self.data.setdefault("inline_cache", {})
+        cache[key] = {"file_id": file_id, "kind": kind, "ts": int(time.time())}
+        # Не даём кэшу расти бесконечно — грубое ограничение размера
+        if len(cache) > 5000:
+            oldest = sorted(cache.items(), key=lambda kv: kv[1].get("ts", 0))[:1000]
+            for k, _ in oldest:
+                cache.pop(k, None)
+        self._mark_dirty()
+
+    def bump_download_counter(self, uid: int) -> int:
+        """Общий счётчик скачиваний пользователя (любой тип/источник) — для периодических напоминаний."""
+        dc = self.data.setdefault("download_counters", {})
+        dc[str(uid)] = int(dc.get(str(uid), 0)) + 1
+        self._mark_dirty()
+        return dc[str(uid)]
+
+    def get_users_count(self) -> int:
+        """
+        Актуальное количество пользователей ПРЯМО СЕЙЧАС — из живого набора
+        в памяти, а не из data["users"], который синхронизируется с ним только
+        во время сохранения (раз в AUTO_SAVE_INTERVAL_SEC). Использовать это,
+        а не len(store.data.get("users", [])), везде где важна точность.
+        """
+        return len(self._users_set)
+
+    def get_all_user_ids(self) -> List[int]:
+        """Актуальный список всех зарегистрированных uid (см. get_users_count)."""
+        return sorted(self._users_set)
+
     # ---------- users ----------
     def set_user_label(self, uid: int, label: str) -> None:
         self.data.setdefault("users_map", {})
@@ -260,7 +295,7 @@ class Storage:
         self._touch_seen(uid)
         return False
 
-    def inc_download(self, uid: int, kind: str, items: int = 1) -> None:
+    def inc_download(self, uid: int, kind: str, items: int = 1, source: str = "tiktok") -> None:
         from helpers import msk_now, period_keys
         now_dt = msk_now()
         keys = period_keys(now_dt)
@@ -276,6 +311,8 @@ class Storage:
             else:
                 d["photo_ops"] = int(d.get("photo_ops", 0)) + 1
                 d["photos_sent"] = int(d.get("photos_sent", 0)) + items
+            by_source = d.setdefault("by_source", {})
+            by_source[source] = int(by_source.get(source, 0)) + 1
 
         for mode, key in keys.items():
             apply_bucket(self._ensure_bucket(mode, key))

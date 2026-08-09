@@ -3,11 +3,11 @@
 Здесь нет бизнес-логики — только разметка интерфейса.
 """
 import urllib.parse
-from typing import List
+from typing import List, Optional
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import SUPPORT_USERNAME, CRYPTO_DONATE_URL, BOT_SHARE_URL, STARS_MIN, STARS_MAX, GIFTS
+from config import SUPPORT_USERNAME, CRYPTO_DONATE_URL, BOT_SHARE_URL, STARS_MIN, STARS_MAX, GIFTS, MAX_VIDEO_MB
 from helpers import html_escape, code
 
 # ================== STATS / TOP KEYBOARDS ==================
@@ -51,14 +51,16 @@ def top_kb() -> InlineKeyboardMarkup:
 
 # ================== START ==================
 START_TEXT = (
-    "👋 Привет!\n\n"
-    "Я скачиваю видео, фото (слайдшоу) и музыку из TikTok.\n"
-    "📎 Просто отправь ссылку — остальное сделаю сам.\n\n"
-    "🧾 Помощь: /help\n"
-    "💛 Поддержать бота: /donate\n"
-    "🆘 Поддержка: /support\n"
-    "📊 Моя статистика: /me\n"
-    "🎁 Реферальная система и подарки: /ref"
+    "👋 <b>Привет! Я TikSaves</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━\n\n"
+    "Скачиваю видео, фото-слайдшоу и музыку из TikTok, а ещё видео с YouTube (в т.ч. Shorts), Instagram, VK и Pinterest.\n\n"
+    "📎 <b>Просто пришли ссылку</b> — остальное сделаю сам, без водяных знаков и подписок.\n\n"
+    "🧭 <b>Полезное:</b>\n"
+    "🧾 Помощь — /help\n"
+    "📊 Моя статистика — /me\n"
+    "🎁 Рефералы и подарки — /ref\n"
+    "💛 Поддержать проект — /donate\n"
+    "🆘 Поддержка — /support"
 )
 
 # ================== DONATE ==================
@@ -90,39 +92,43 @@ def stars_kb() -> InlineKeyboardMarkup:
     )
 
 DONATE_TEXT = (
-    "📌 <b>Поддержать бота</b>\n\n"
-    "Спасибо, что пользуешься ботом! Донат помогает держать всё стабильно и быстро:\n"
-    "• хостинг и трафик 24/7\n"
-    "• поддержка прокси/апи\n"
-    "• новые функции и улучшения\n\n"
+    "💛 <b>Поддержать TikSaves</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━\n\n"
+    "Спасибо, что пользуешься ботом! Донат помогает держать его быстрым и стабильным:\n\n"
+    "☁️ хостинг и трафик 24/7\n"
+    "🔌 поддержка API и серверов\n"
+    "🚀 новые фичи и улучшения\n\n"
     "Выбери удобный способ 👇"
 )
 STARS_MENU_TEXT = (
-    "⭐ <b>Telegram Stars</b>\n\n"
-    "Самый быстрый способ поддержки прямо в Telegram.\n"
-    f"Выбери сумму ({STARS_MIN}-{STARS_MAX} ⭐) или введи свою:"
+    "⭐ <b>Telegram Stars</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━\n\n"
+    "Самый быстрый способ поддержать проект прямо в Telegram.\n\n"
+    f"Выбери сумму ({STARS_MIN}–{STARS_MAX} ⭐) или введи свою 👇"
 )
 SUPPORT_TEXT = (
-    "🆘 <b>Поддержка</b>\n\n"
-    f"Если есть вопросы/проблемы - пиши сюда: {html_escape(SUPPORT_USERNAME)}\n"
-    "Сразу укажи ссылку и что именно не работает 🙌"
+    "🆘 <b>Поддержка</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━\n\n"
+    f"Есть вопрос или что-то не работает? Пиши сюда: {html_escape(SUPPORT_USERNAME)}\n\n"
+    "Приложи ссылку на видео и опиши, что пошло не так — так разберёмся быстрее 🙌"
 )
-SHARE_TEXT = "Нашел топового бота для скачивания видео и фото из TikTok. Переходи ☝️"
+SHARE_TEXT = "🔥 Нашёл топового бота для скачивания видео и фото из TikTok — без водяных знаков и подписок. Залетай ☝️"
 
 # ================== HELP ==================
 HELP_TEXT = (
-    "🧾 <b>Помощь по боту</b>\n\n"
-    "📎 Просто отправь ссылку на TikTok — бот предложит варианты.\n\n"
-    "Кнопки и что они делают:\n"
-    "• 🎬 Скачать видео — пришлю видео без водяных знаков (если доступно)\n"
-    "• 🖼️ Скачать фото — выбор фото или всё сразу (слайдшоу)\n"
-    "• 🎵 Скачать музыку — скачивание звука/музыки\n"
-    "• 💛 Донат — поддержка проекта\n"
-    "• 🆘 Поддержка — связь с админом\n\n"
-    "🎁 Приглашай друзей и получай баллы на подарки: /ref\n\n"
-    "⚠️ Лимиты:\n"
-    "• Частые запросы ограничены кулдауном\n"
-    "• Много фото за раз — лимит объёма"
+    "🧾 <b>Помощь по TikSaves</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━\n\n"
+    "📎 Просто пришли ссылку на TikTok, YouTube, Instagram, VK или Pinterest — бот сам предложит варианты.\n\n"
+    "🧭 <b>Что умеют кнопки:</b>\n"
+    "🎬 Скачать видео — без водяных знаков, если доступно\n"
+    "🖼️ Скачать фото — выбери нужные или забери слайдшоу целиком\n"
+    "🎵 Скачать музыку — сохрани звук отдельно\n"
+    "💛 Донат — поддержать проект\n"
+    "🆘 Поддержка — связь с админом\n\n"
+    "🎁 <b>Совет:</b> приглашай друзей и получай баллы на подарки — /ref\n\n"
+    "⚠️ <b>Лимиты:</b>\n"
+    "• частые запросы ограничены небольшим кулдауном\n"
+    "• много фото за раз — ограничение по объёму"
 )
 
 def help_kb() -> InlineKeyboardMarkup:
@@ -160,34 +166,44 @@ def help_section_kb() -> InlineKeyboardMarkup:
 
 HELP_SECTIONS = {
     "video": (
-        "🎬 <b>Скачать видео</b>\n\n"
-        "1) Отправь ссылку на TikTok\n"
-        "2) Выбери «Скачать видео»\n"
-        "3) Получишь видео в чате"
+        "🎬 <b>Скачать видео</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "1️⃣ Пришли ссылку на TikTok, YouTube, Instagram, VK или Pinterest\n"
+        "2️⃣ Выбери «Скачать видео»\n"
+        "3️⃣ Получи файл без водяных знаков 🎉"
     ),
     "photo": (
-        "🖼️ <b>Скачать фото</b>\n\n"
-        "1) Отправь ссылку на TikTok с слайдшоу\n"
-        "2) Выбери фото по номерам или скачай всё\n"
-        "3) Получишь альбом с фото"
+        "🖼️ <b>Скачать фото</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "1️⃣ Пришли ссылку на TikTok-слайдшоу\n"
+        "2️⃣ Выбери нужные фото по номерам — или сразу всё\n"
+        "3️⃣ Получи готовый альбом 📸"
     ),
     "music": (
-        "🎵 <b>Скачать музыку</b>\n\n"
-        "Нажми «Скачать музыку» после обработки ссылки — пришлю аудио файл."
+        "🎵 <b>Скачать музыку</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "После обработки ссылки нажми «🎵 Музыка» — пришлю трек отдельным файлом."
     ),
     "limits": (
-        "⚠️ <b>Лимиты</b>\n\n"
-        "Слишком частые запросы ограничены кулдауном — подожди немного и попробуй снова.\n"
-        "При систематическом флуде возможна временная блокировка."
+        "⚠️ <b>Лимиты</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Слишком частые запросы придерживаются небольшим кулдауном — просто подожди пару секунд.\n"
+        "При систематическом флуде возможна временная блокировка.\n\n"
+        f"📦 <b>Размер файла:</b> Telegram не даёт ботам отправлять файлы тяжелее {MAX_VIDEO_MB} МБ — "
+        "это ограничение платформы, не бота. Слишком тяжёлые видео (обычно очень длинные ролики "
+        "с YouTube/VK) скачать не получится."
     ),
     "donate": (
-        "💛 <b>Донат</b>\n\n"
-        "Поддержка проекта через Stars или крипту. Спасибо!"
+        "💛 <b>Донат</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Поддержать проект можно через Telegram Stars или крипту.\n"
+        "Каждый донат идёт на хостинг и развитие бота — спасибо! 🙌"
     ),
     "support": (
-        "🆘 <b>Поддержка</b>\n\n"
-        f"Пиши: {html_escape(SUPPORT_USERNAME)}\n"
-        "Укажи ссылку и что не работает."
+        "🆘 <b>Поддержка</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Пиши сюда: {html_escape(SUPPORT_USERNAME)}\n"
+        "Приложи ссылку и опиши, что не работает — так быстрее разберёмся."
     ),
 }
 
@@ -208,21 +224,17 @@ def post_download_kb() -> InlineKeyboardMarkup:
         ]
     )
 
-def under_video_kb(has_music: bool = False, has_description: bool = False, req_id: str = "") -> InlineKeyboardMarkup:
-    """Кнопки под скачанным видео: Музыка (если есть), Описание (если есть), Донат, Поделиться."""
-    top_row: List[InlineKeyboardButton] = []
+def under_video_kb(has_music: bool = False, has_description: bool = False, req_id: str = "") -> Optional[InlineKeyboardMarkup]:
+    """Кнопки под скачанным видео: Музыка (если есть), Описание (если есть). Без доната/поделиться."""
+    row: List[InlineKeyboardButton] = []
     if has_music:
-        top_row.append(InlineKeyboardButton(text="🎵 Музыка", callback_data=f"dl:audio:{req_id}"))
+        row.append(InlineKeyboardButton(text="🎵 Музыка", callback_data=f"dl:audio:{req_id}"))
     if has_description:
-        top_row.append(InlineKeyboardButton(text="📝 Описание", callback_data=f"dl:desc:{req_id}"))
+        row.append(InlineKeyboardButton(text="📝 Описание", callback_data=f"dl:desc:{req_id}"))
 
-    bottom_row: List[InlineKeyboardButton] = [
-        InlineKeyboardButton(text="💛 Донат", callback_data="donate:open"),
-        InlineKeyboardButton(text="🔗 Поделиться", url=_share_url()),
-    ]
-
-    rows = [top_row, bottom_row] if top_row else [bottom_row]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    if not row:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[row])
 
 def video_choice_kb() -> InlineKeyboardMarkup:
     """Только «Скачать видео» и «Отмена» — кнопка музыки перенесена под видео."""
@@ -247,7 +259,10 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="📌 Напоминание", callback_data="ad:reminder"),
-                InlineKeyboardButton(text="📢 Реклама", callback_data="ad:advert"),
+                InlineKeyboardButton(text="💛 Донат", callback_data="ad:donate"),
+            ],
+            [
+                InlineKeyboardButton(text="🎁 Рефералка", callback_data="ad:refreminder"),
             ],
             [
                 InlineKeyboardButton(text="👑 Администраторы", callback_data="ad:adminlist"),
@@ -270,14 +285,14 @@ def admin_back_kb() -> InlineKeyboardMarkup:
     )
 
 ADMIN_MENU_TEXT = (
-    "🛠 <b>Админ-панель</b>\n"
+    "🛠 <b>Админ-панель TikSaves</b>\n"
     "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "📊 <b>Статистика</b> — выбор периода\n"
-    "🏆 <b>Топ</b> — лидеры по периоду\n"
+    "📊 <b>Статистика</b> — по периодам\n"
+    "🏆 <b>Топ</b> — лидеры + топ рефереров\n"
     "🚫 <b>Бан-лист</b> — активные баны\n"
     "🗄 <b>Дамп БД</b> — скачать базу данных\n"
     "👑 <b>Администраторы</b> — список и управление\n"
-    "📌 <b>Напоминание</b> / 📢 <b>Реклама</b> — рассылки\n"
+    "📌 <b>Напоминание</b> / 💛 <b>Донат</b> / 🎁 <b>Рефералка</b> — рассылки вручную\n"
     "🧾 <b>Команды</b> — полный список\n"
 )
 
@@ -295,8 +310,8 @@ ADMIN_HELP_TEXT = (
 
     "🏆 <b>Топ пользователей</b>\n"
     f"├ {code('/top d')} {code('/top n')} {code('/top m')} {code('/top y')} {code('/top all')}\n"
-    f"├ {code('/top 2026-02-01 2026-02-07')} — диапазон\n"
-    f"└ {code('/top ref')} — топ по рефералам\n\n"
+    f"└ {code('/top 2026-02-01 2026-02-07')} — диапазон\n"
+    "   <i>(топ рефереров показывается там же автоматически)</i>\n\n"
 
     "🎁 <b>Реферальная система</b>\n"
     f"├ {code('/refid ID')} — кто пригласил пользователя\n"

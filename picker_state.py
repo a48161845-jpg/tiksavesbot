@@ -14,7 +14,7 @@
 """
 import time
 import uuid
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -29,6 +29,18 @@ VIDEO_EXTRAS_TTL_SEC = 1800  # 30 минут на то, чтобы нажать 
 
 def new_req_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def photo_mode_choice_kb(req_id: str) -> InlineKeyboardMarkup:
+    """Меню перед пикером: скачать как отдельные фото или собрать всё в одно видео со звуком."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🖼️ Как фото", callback_data=f"pk:mode:photo:{req_id}"),
+                InlineKeyboardButton(text="🎬 Как видео", callback_data=f"pk:mode:video:{req_id}"),
+            ]
+        ]
+    )
 
 
 def cleanup_video_extras() -> None:

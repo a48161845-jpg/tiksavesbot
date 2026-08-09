@@ -3,7 +3,6 @@
 и резервный (Apify, опционально), а также логика переключения между ними.
 """
 import json
-import re
 import time
 import asyncio
 import contextlib
@@ -20,12 +19,11 @@ from config import (
     API_URL,
     APIFY_TOKEN,
     APIFY_ACTOR,
-    TIKLYDOWN_URL,
+    TIKWM_COOLDOWN_SEC,
     API_ERROR_WINDOW_SEC,
     API_ERROR_THRESHOLD,
-    API_FALLBACK_COOLDOWN_SEC,
 )
-from helpers import html_escape, code, clamp_reason, ms_since, exc_type_name, resolve_tiktok_redirect, normalize_tiktok_url
+from helpers import html_escape, code, clamp_reason, ms_since, exc_type_name, resolve_tiktok_redirect, normalize_tiktok_url, normalize_description as _normalize_description
 from storage import store
 from logging_channel import log_event
 
@@ -108,34 +106,6 @@ def _deep_find_list(data: Any, keys: List[str], _depth: int = 0) -> List[str]:
     return []
 
 
-_TAG_GLUE_RE = re.compile(r"(?<=\S)(?=[#@])")
-_MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
-_TRAILING_TAGS_RE = re.compile(r"[ \t]+((?:[#@]\S+[ \t]*){2,})$")
-
-
-def _normalize_description(text: Optional[str]) -> Optional[str]:
-    """
-    API-скрейперы (tikwm и подобные) иногда отдают описание видео с хэштегами,
-    склеенными друг с другом и с текстом без пробелов — "текст#тег1#тег2"
-    вместо "текст #тег1 #тег2", как это выглядит в самом TikTok. Расклеиваем:
-    вставляем пробел перед каждым "#"/"@", если перед ним нет пробела, и
-    схлопываем случайные повторные пробелы (переносы строк не трогаем).
-
-    Дополнительно: если в конце описания идёт "хвост" из 2+ хэштегов/упоминаний
-    подряд (частый паттерн — основной текст, потом блок тегов), отделяем его
-    пустой строкой от текста, как обычно и выглядит в самом приложении TikTok,
-    а не одной слипшейся кучей.
-    """
-    if not text:
-        return text
-    t = _TAG_GLUE_RE.sub(" ", text)
-    t = _MULTI_SPACE_RE.sub(" ", t)
-    m = _TRAILING_TAGS_RE.search(t)
-    if m:
-        t = t[: m.start()] + "\n\n" + m.group(1).strip()
-    return t.strip()
-
-
 class BaseProvider:
     name = "base"
     async def get_media(self, url: str) -> MediaInfo:
@@ -184,9 +154,25 @@ class _DlErrMixin:
 class TikWMClient(_DlErrMixin, BaseProvider):
     name = "tikwm"
 
+    # Общий для всех запросов "тормоз" перед вызовом tikwm API — небольшая
+    # пауза между запросами, чтобы не словить рейт-лимит бесплатного API
+    # (лок и таймстемп на уровне класса — общие для всех инстансов и всех
+    # параллельных скачиваний, а не привязаны к конкретному пользователю).
+    _cooldown_lock = asyncio.Lock()
+    _last_call_ts = 0.0
+
     def __init__(self, session: aiohttp.ClientSession, bot: Optional[Bot] = None):
         self.session = session
         self.bot = bot
+
+    @classmethod
+    async def _respect_cooldown(cls) -> None:
+        async with cls._cooldown_lock:
+            now = time.monotonic()
+            wait = TIKWM_COOLDOWN_SEC - (now - cls._last_call_ts)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            cls._last_call_ts = time.monotonic()
 
     @staticmethod
     def _media_from_data(data: Dict[str, Any]) -> MediaInfo:
@@ -239,6 +225,7 @@ class TikWMClient(_DlErrMixin, BaseProvider):
         for attempt in range(1, 4):
             t0 = time.perf_counter()
             try:
+                await self._respect_cooldown()
                 async with self.session.post(API_URL, data={"url": url}, headers=headers) as resp:
                     raw = await resp.read()
                     if not raw:
@@ -324,80 +311,12 @@ class TikWMClient(_DlErrMixin, BaseProvider):
         raise RuntimeError(f"Download failed after retries: {last_err}") from last_err
 
 
-class TiklyDownProvider(_DlErrMixin, BaseProvider):
-    """
-    Запасной бесплатный источник (без ключа): api.tiklydown.eu.org.
-    Это неофициальное стороннее API, его точная схема ответа не документирована
-    жёстко, поэтому парсинг сделан "защитно" — ищем несколько вариантов полей.
-    Если формат у них изменится, попытка просто провалится и провайдер-свитчер
-    перейдёт к следующему источнику по цепочке (ничего не сломается),
-    а точную причину будет видно в логе ошибок (#dlerr).
-    """
-    name = "tiklydown"
-
-    def __init__(self, session: aiohttp.ClientSession, bot: Optional[Bot] = None):
-        self.session = session
-        self.bot = bot
-
-    async def get_media(self, url: str) -> MediaInfo:
-        headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-        last_err: Optional[Exception] = None
-        for attempt in range(1, 3):
-            t0 = time.perf_counter()
-            try:
-                async with self.session.get(TIKLYDOWN_URL, params={"url": url}, headers=headers) as resp:
-                    raw = await resp.read()
-                    if not raw:
-                        raise RuntimeError("Empty response body from TiklyDown API")
-                    js = json.loads(raw.decode("utf-8", "ignore"))
-
-                if isinstance(js, dict) and (js.get("error") or js.get("success") is False):
-                    raise RuntimeError(f"TiklyDown API error: {js.get('error') or js.get('message') or js}")
-
-                video = _deep_find_url(js, ["nowm", "no_watermark", "noWatermark", "play", "hdplay", "video_url", "videoUrl", "download_url", "downloadUrl"])
-                photos = _deep_find_list(js, ["images", "image", "photos", "slides", "imagePost"])
-                music = _deep_find_url(js, ["music", "music_url", "musicUrl", "audio", "audio_url", "audioUrl", "mp3"])
-                description = _normalize_description(_deep_find_str(js, ["title", "desc", "description", "caption"]))
-
-                if not video and not photos:
-                    raise RuntimeError(f"TiklyDown: no video/photo links in response (keys: {list(js.keys()) if isinstance(js, dict) else type(js)})")
-
-                return MediaInfo(video=video, photos=photos, music=music, description=description)
-
-            except (ClientPayloadError, aiohttp.ClientConnectionError, aiohttp.ServerDisconnectedError,
-                    asyncio.TimeoutError, aiohttp.ClientOSError, aiohttp.ClientResponseError) as e:
-                last_err = e
-                await self._log_dlerr("api_tiklydown", url, attempt, ms_since(t0), e)
-                await asyncio.sleep(0.5 * attempt)
-                continue
-            except Exception as e:
-                await self._log_dlerr("api_tiklydown", url, attempt, ms_since(t0), e)
-                raise
-
-        raise RuntimeError(f"TiklyDown fetch failed after retries: {last_err}") from last_err
-
-    async def download_to_file(
-        self,
-        url: str,
-        path: Path,
-        max_bytes: int,
-        stage: str,
-        progress_cb: Optional[Callable] = None,
-        cancel_cb: Optional[Callable] = None,
-    ) -> int:
-        # Скачивание самого файла по прямой CDN-ссылке — обычный HTTP GET,
-        # не зависит от того, какое API её выдало, поэтому переиспользуем TikWM.
-        client = TikWMClient(self.session, self.bot)
-        return await client.download_to_file(
-            url, path, max_bytes, stage=stage, progress_cb=progress_cb, cancel_cb=cancel_cb
-        )
-
-
 class ApifyProvider(_DlErrMixin, BaseProvider):
     """
     Запасной платный источник через Apify (нужен APIFY_TOKEN в .env и
     ALT_PROVIDER=apify). По умолчанию используется актор apilabs/tiktok-downloader
-    (см. APIFY_ACTOR в config.py) — парсинг ответа тоже защитный (см. TiklyDownProvider),
+    (см. APIFY_ACTOR в config.py) — парсинг ответа тоже защитный (ищем несколько
+    вариантов полей вместо жёсткой привязки к одному пути),
     т.к. точная схема датасета зависит от актора.
     """
     name = "apify"
