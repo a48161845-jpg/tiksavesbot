@@ -17,4 +17,7 @@ from . import referral_admin_commands
 from . import referral_callbacks
 from . import picker_callbacks
 from . import video_choice_callbacks
+from . import youtube_handler
+from . import other_sources_handler
+from . import inline_handler
 from . import main_handler  # noqa: F401  (catch-all — импортировать последним)

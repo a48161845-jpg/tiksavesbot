@@ -22,7 +22,7 @@ from config import (
     MSG_DL,
     CAPTION_VIDEO,
     PHOTO_WARNING_TEXT,
-    REF_POINTS_PER_REFERRAL,
+    MAX_VIDEO_MB,
 )
 from helpers import (
     html_escape,
@@ -40,25 +40,10 @@ from logging_channel import log_event, format_user_for_log
 from strikes import add_download_strike
 from providers import TikWMClient, ProviderSwitcher
 from send_helpers import send_video_smart
-from picker_state import pending, cleanup_pending, video_extras, new_req_id, cleanup_video_extras, picker_kb
+from picker_state import pending, cleanup_pending, video_extras, new_req_id, cleanup_video_extras, photo_mode_choice_kb
 from keyboards import under_video_kb
 from donate import waiting_stars_amount, send_stars_invoice
-from referral import new_referral_notify_text
-
-
-async def _reward_referral_if_first_download(bot, uid: int, label: str) -> None:
-    """Начисляет баллы пригласившему — только один раз, при первом успешном скачивании uid."""
-    reward = store.try_reward_referral(uid, REF_POINTS_PER_REFERRAL)
-    if not reward:
-        return
-    with contextlib.suppress(Exception):
-        await bot.send_message(
-            reward["referrer_id"],
-            new_referral_notify_text(
-                label, {"referrals_count": reward["referrals_count"], "ref_points": reward["ref_points"]}
-            ),
-            parse_mode="HTML",
-        )
+from referral import after_download_hooks
 
 
 @dp.message(F.text)
@@ -95,7 +80,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
     if url:
         url = normalize_tiktok_url(url)
     if not url and not text.startswith("/"):
-        await message.answer("📎 Пришли ссылку на TikTok.")
+        await message.answer("📎 Пришли ссылку на TikTok, YouTube, Instagram, VK или Pinterest.")
         return
 
     if text.startswith("/"):
@@ -151,7 +136,11 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
                     "src": url or text,
                 }
                 with contextlib.suppress(Exception):
-                    await status.edit_text("🖼️ Выбери фото по номерам или выдели страницу 👇", reply_markup=picker_kb(req_id))
+                    await status.edit_text(
+                        "📎 <b>В посте несколько фото</b>\n\nКак скачать?",
+                        parse_mode="HTML",
+                        reply_markup=photo_mode_choice_kb(req_id),
+                    )
                 return
 
             if not video:
@@ -166,8 +155,8 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
                 status_msg=status,
                 reply_markup=under_video_kb(has_music=bool(music), has_description=bool(description), req_id=req_id),
             )
-            store.inc_download(uid, "video", items=1)
-            await _reward_referral_if_first_download(message.bot, uid, label)
+            store.inc_download(uid, "video", items=1, source="tiktok")
+            await after_download_hooks(message.bot, uid, label)
             with contextlib.suppress(Exception):
                 await status.delete()
             await log_event(
@@ -206,7 +195,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
         # Видео слишком большое — тихая ошибка, не логируем в канал
         if "file too large" in low:
             with contextlib.suppress(Exception):
-                await status.edit_text("❌ Видео слишком большое для отправки через Telegram (лимит 60 МБ).")
+                await status.edit_text(f"❌ Файл больше лимита ({MAX_VIDEO_MB} МБ). Telegram не даёт боту отправлять файлы тяжелее.")
             return
 
         store.inc_error("handler", e)

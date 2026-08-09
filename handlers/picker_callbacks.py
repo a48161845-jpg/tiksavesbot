@@ -1,6 +1,7 @@
 """
-Callback-обработчик фото-пикера: пагинация, выбор отдельных фото,
-музыка/описание (галочки-переключатели), скачивание выбранного/всего.
+Callback-обработчик фото-пикера: сначала выбор режима (фото или видео),
+потом — для режима "фото" — пагинация/выбор отдельных фото, музыка/описание
+(галочки-переключатели), скачивание выбранного/всего.
 
 callback_data начинается на "pk:" и всегда содержит req_id — уникальный
 идентификатор конкретного сообщения-пикера (НЕ uid!). Это важно: если
@@ -10,38 +11,99 @@ callback_data начинается на "pk:" и всегда содержит r
 старым сообщением путали/сбрасывали чужой выбор.
 """
 import contextlib
+import time
+from pathlib import Path
 
 from aiogram import F
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, FSInputFile
 
 from globals_state import dp
 import globals_state
-from config import PAGE_SIZE, MSG_DL, MSG_PHOTO, CAPTION_PHOTO, REF_POINTS_PER_REFERRAL
-from helpers import code
+from config import PAGE_SIZE, MSG_DL, MSG_PHOTO, CAPTION_PHOTO, CAPTION_VIDEO
+from helpers import code, exc_type_name, clamp_reason, html_escape
 from storage import store
 from user_label import resolve_user_label
 from limiters import lim
 from logging_channel import log_event, format_user_for_log
 from strikes import add_download_strike
 from send_helpers import send_photos, send_music_if_any, send_description_if_any
-from referral import new_referral_notify_text
-from picker_state import pending, cleanup_pending, picker_kb
-from keyboards import post_download_kb
+from referral import after_download_hooks
+from picker_state import pending, cleanup_pending, picker_kb, video_extras, new_req_id, cleanup_video_extras
+from keyboards import post_download_kb, under_video_kb
+from photo_video import build_photo_slideshow_video
 
 
-async def _reward_referral_if_first_download(bot, uid: int, label: str) -> None:
-    """Начисляет баллы пригласившему — только один раз, при первом успешном скачивании uid."""
-    reward = store.try_reward_referral(uid, REF_POINTS_PER_REFERRAL)
-    if not reward:
+async def _send_photos_as_video(call: CallbackQuery, st: dict, uid: int, label: str) -> None:
+    """
+    Режим "🎬 Как видео": собирает все фото + музыку поста в одно MP4 через
+    ffmpeg и отправляет ЕГО ЖЕ, как обычное скачанное видео — с кнопками
+    Музыка/Описание (как у TikTok), а не как фото-альбом.
+    """
+    photo_urls = list(st.get("photos") or [])
+    session = getattr(globals_state.g_provider, "session", None)
+
+    if not photo_urls or not session:
+        with contextlib.suppress(Exception):
+            await call.message.answer("❌ Не получилось собрать видео — попробуй ещё раз.")
         return
+
+    status = None
     with contextlib.suppress(Exception):
-        await bot.send_message(
-            reward["referrer_id"],
-            new_referral_notify_text(
-                label, {"referrals_count": reward["referrals_count"], "ref_points": reward["ref_points"]}
-            ),
-            parse_mode="HTML",
+        status = await call.message.answer("🎬 Собираю видео из фото, подожди немного…")
+
+    name_prefix = f"slideshow_{uid}_{int(time.time())}"
+    out_path: Path = None
+    try:
+        out_path = await build_photo_slideshow_video(
+            session, photo_urls, st.get("music"), Path("."), name_prefix
         )
+
+        description = st.get("description")
+        req_id = new_req_id()
+        cleanup_video_extras()
+        if st.get("music") or description:
+            video_extras[req_id] = {
+                "music": st.get("music"),
+                "description": description,
+                "src": st.get("src"),
+                "uid": uid,
+                "ts": time.time(),
+            }
+
+        with contextlib.suppress(Exception):
+            if status:
+                await status.delete()
+
+        await call.message.answer_video(
+            FSInputFile(out_path),
+            caption=CAPTION_VIDEO,
+            parse_mode="HTML",
+            reply_markup=under_video_kb(has_music=bool(st.get("music")), has_description=bool(description), req_id=req_id),
+        )
+        store.inc_download(uid, "video", items=1, source="tiktok")
+        await after_download_hooks(call.bot, uid, label)
+
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            if status:
+                await status.edit_text("❌ Не получилось собрать видео из фото. Попробуй ещё раз позже.")
+            else:
+                await call.message.answer("❌ Не получилось собрать видео из фото. Попробуй ещё раз позже.")
+        with contextlib.suppress(Exception):
+            await log_event(
+                call.bot,
+                "dlerr",
+                [
+                    "❌ Категория: <b>Ошибка сборки фото-видео</b>",
+                    f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
+                    f"🧬 Тип: <b>{html_escape(exc_type_name(e))}</b>",
+                    f"🧨 Причина: <b>{html_escape(clamp_reason(e))}</b>",
+                ],
+            )
+    finally:
+        if out_path:
+            with contextlib.suppress(Exception):
+                out_path.unlink(missing_ok=True)
 
 
 @dp.callback_query(F.data.startswith("pk:"))
@@ -59,6 +121,46 @@ async def picker_cb(call: CallbackQuery):
 
     parts = (call.data or "").split(":")
     act = parts[1] if len(parts) > 1 else ""
+
+    # У "mode" особая форма callback_data: pk:mode:{photo|video}:{req_id}
+    if act == "mode":
+        mode = parts[2] if len(parts) > 2 else ""
+        req_id = parts[3] if len(parts) > 3 else ""
+        st = pending.get(req_id)
+        if not st:
+            await call.answer("⏱️ Выбор устарел. Скинь ссылку ещё раз.", show_alert=True)
+            with contextlib.suppress(Exception):
+                if call.message:
+                    await call.message.delete()
+            return
+        if st.get("uid") != uid:
+            await call.answer("Это не твой выбор фото.", show_alert=True)
+            return
+
+        if mode == "photo":
+            await call.answer()
+            with contextlib.suppress(Exception):
+                await call.message.edit_text("🖼️ Выбери фото по номерам или выдели страницу 👇", reply_markup=picker_kb(req_id))
+            return
+
+        if mode == "video":
+            ok, wait = lim.dl_hit(uid)
+            if not ok:
+                await call.message.answer(MSG_DL.format(n=wait), parse_mode="HTML")
+                await add_download_strike(call.bot, uid, label, "Лимит скачиваний", src=st.get("src"))
+                await call.answer()
+                return
+
+            pending.pop(req_id, None)
+            with contextlib.suppress(Exception):
+                await call.message.delete()
+            await call.answer("Собираю видео…")
+            await _send_photos_as_video(call, st, uid, label)
+            return
+
+        await call.answer()
+        return
+
     req_id = parts[2] if len(parts) > 2 else ""
 
     st = pending.get(req_id)
@@ -191,7 +293,7 @@ async def picker_cb(call: CallbackQuery):
 
         await call.answer("Отправляю всё…")
         cnt = await send_photos(call.message, photos_all, caption_html=CAPTION_PHOTO)
-        store.inc_download(uid, "photo", items=cnt)
+        store.inc_download(uid, "photo", items=cnt, source="tiktok")
 
         if want_music and globals_state.g_provider:
             await send_music_if_any(call.message, globals_state.g_provider, st.get("music"), uid=uid, label=label, src=src)
@@ -199,7 +301,7 @@ async def picker_cb(call: CallbackQuery):
             await send_description_if_any(call.message, st.get("description"))
 
         if cnt:
-            await _reward_referral_if_first_download(call.bot, uid, label)
+            await after_download_hooks(call.bot, uid, label)
 
         await log_event(
             call.bot,
@@ -241,7 +343,7 @@ async def picker_cb(call: CallbackQuery):
         cnt = 0
         if chosen:
             cnt = await send_photos(call.message, chosen, caption_html=CAPTION_PHOTO)
-            store.inc_download(uid, "photo", items=cnt)
+            store.inc_download(uid, "photo", items=cnt, source="tiktok")
 
         if want_music and globals_state.g_provider:
             await send_music_if_any(call.message, globals_state.g_provider, st.get("music"), uid=uid, label=label, src=src)
@@ -249,7 +351,7 @@ async def picker_cb(call: CallbackQuery):
             await send_description_if_any(call.message, st.get("description"))
 
         if cnt:
-            await _reward_referral_if_first_download(call.bot, uid, label)
+            await after_download_hooks(call.bot, uid, label)
             await log_event(
                 call.bot,
                 "photodl",
