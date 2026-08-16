@@ -173,16 +173,16 @@ REF_TOP_LIMIT = int(os.getenv("REF_TOP_LIMIT", "10"))
 # Каталог подарков: ключ, эмодзи, название, цена в баллах.
 # Выдаются вручную администрацией — тут только учёт заявок/баланса.
 GIFTS = [
-    {"key": "heart",     "emoji": "❤️", "name": "Сердечко",   "price": 100},
-    {"key": "bear",      "emoji": "🧸", "name": "Мишка",      "price": 100},
-    {"key": "rose",      "emoji": "🌹", "name": "Роза",       "price": 200},
-    {"key": "giftbox",   "emoji": "🎁", "name": "Подарок",    "price": 200},
-    {"key": "champagne", "emoji": "🥂", "name": "Шампанское", "price": 500},
-    {"key": "cake",      "emoji": "🍰", "name": "Тортик",     "price": 500},
-    {"key": "rocket",    "emoji": "🚀", "name": "Ракета",     "price": 500},
-    {"key": "diamond",   "emoji": "💎", "name": "Алмаз",      "price": 1000},
-    {"key": "ring",      "emoji": "💍", "name": "Кольцо",     "price": 1000},
-    {"key": "trophy",    "emoji": "🏆", "name": "Кубок",      "price": 1000},
+    {"key": "santa_bear",      "emoji": "🧸", "name": "Мишка-Санта",       "price": 100,  "custom_emoji_id": "5379850840691476775"},
+    {"key": "christmas_tree",  "emoji": "🎄", "name": "Новогодняя ёлка",   "price": 100,  "custom_emoji_id": "5345935030143196497"},
+    {"key": "heart_bear",      "emoji": "🧸", "name": "Мишка с сердечком",  "price": 200,  "custom_emoji_id": "5226661632259691727"},
+    {"key": "i_love_u",        "emoji": "❤️", "name": "Сердце I LOVE U",   "price": 200,  "custom_emoji_id": "5224628072619216265"},
+    {"key": "flower_bear",     "emoji": "🧸", "name": "Мишка с цветами",   "price": 500,  "custom_emoji_id": "5289761157173775507"},
+    {"key": "leprechaun_bear", "emoji": "🧸", "name": "Мишка-Лепрекон",     "price": 500,  "custom_emoji_id": "5317000922096769303"},
+    {"key": "clown_bear",      "emoji": "🧸", "name": "Мишка-Клоун",       "price": 500,  "custom_emoji_id": "5359736160224586485"},
+    {"key": "rabbit_bear",     "emoji": "🧸", "name": "Мишка-Заяц",        "price": 1000, "custom_emoji_id": "5393309541620291208"},
+    {"key": "hammer_bear",     "emoji": "🧸", "name": "Мишка с молотком",  "price": 1000, "custom_emoji_id": "5447213743417105726"},
+    {"key": "ball_bear",       "emoji": "🧸", "name": "Мишка с мячом",     "price": 1000, "custom_emoji_id": "5397971251878732060"},
 ]
 GIFTS_BY_KEY = {g["key"]: g for g in GIFTS}
 
