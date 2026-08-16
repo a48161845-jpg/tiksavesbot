@@ -22,6 +22,53 @@ from broadcast import (
 )
 
 
+@dp.message(Command("tex"))
+async def maintenance_cmd(message: Message):
+    """
+    /tex <текст>  — включить технический режим с этим сообщением (обычным
+                    пользователям бот перестаёт отвечать по существу и
+                    показывает это сообщение; админов режим не касается).
+    /tex off      — выключить технический режим.
+    /tex          — посмотреть текущий статус.
+    """
+    admin_id = message.from_user.id
+    admin_label = await resolve_user_label(message.bot, admin_id)
+    store.set_user_label(admin_id, admin_label)
+
+    if not is_admin(admin_id):
+        return
+    if not await gate_message(message, admin_label):
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) == 2 else ""
+
+    if not arg:
+        status = "🛠 <b>включён</b>" if store.is_maintenance() else "✅ <b>выключен</b>"
+        await message.answer(
+            f"Технический режим: {status}\n\n"
+            f"Текущее сообщение:\n{html_escape(store.get_maintenance_text())}\n\n"
+            f"Использование:\n{code('/tex текст')} — включить\n{code('/tex off')} — выключить",
+            parse_mode="HTML",
+        )
+        return
+
+    if arg.lower() in ("off", "выкл", "стоп"):
+        store.set_maintenance(False)
+        await message.answer("✅ Технический режим выключен. Бот снова работает для всех.")
+        log_admin(admin_id, "maintenance_off", "")
+        return
+
+    store.set_maintenance(True, arg)
+    await message.answer(
+        "🛠 <b>Технический режим включён</b>\n\n"
+        f"Пользователи (кроме админов) увидят:\n\n{html_escape(arg)}\n\n"
+        f"Чтобы выключить: {code('/tex off')}",
+        parse_mode="HTML",
+    )
+    log_admin(admin_id, "maintenance_on", arg[:200])
+
+
 @dp.message(Command("ban"))
 async def ban_cmd(message: Message):
     admin_id = message.from_user.id

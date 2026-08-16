@@ -1,7 +1,6 @@
 """
-Callback-обработчик фото-пикера: сначала выбор режима (фото или видео),
-потом — для режима "фото" — пагинация/выбор отдельных фото, музыка/описание
-(галочки-переключатели), скачивание выбранного/всего.
+Callback-обработчик фото-пикера: пагинация/выбор отдельных фото, музыка/
+описание (галочки-переключатели), скачивание выбранного/всего.
 
 callback_data начинается на "pk:" и всегда содержит req_id — уникальный
 идентификатор конкретного сообщения-пикера (НЕ uid!). Это важно: если
@@ -20,7 +19,7 @@ from aiogram.types import CallbackQuery, FSInputFile
 from globals_state import dp
 import globals_state
 from config import PAGE_SIZE, MSG_DL, MSG_PHOTO, CAPTION_PHOTO, CAPTION_VIDEO
-from helpers import code, exc_type_name, clamp_reason, html_escape
+from helpers import code, is_admin, plain, exc_type_name, clamp_reason, html_escape
 from storage import store
 from user_label import resolve_user_label
 from limiters import lim
@@ -34,14 +33,9 @@ from photo_video import build_photo_slideshow_video
 
 
 async def _send_photos_as_video(call: CallbackQuery, st: dict, uid: int, label: str) -> None:
-    """
-    Режим "🎬 Как видео": собирает все фото + музыку поста в одно MP4 через
-    ffmpeg и отправляет ЕГО ЖЕ, как обычное скачанное видео — с кнопками
-    Музыка/Описание (как у TikTok), а не как фото-альбом.
-    """
+    """Режим "🎬 Как видео": собирает фото+музыку в MP4 и шлёт как обычное видео с кнопками Музыка/Описание."""
     photo_urls = list(st.get("photos") or [])
     session = getattr(globals_state.g_provider, "session", None)
-
     if not photo_urls or not session:
         with contextlib.suppress(Exception):
             await call.message.answer("❌ Не получилось собрать видео — попробуй ещё раз.")
@@ -54,20 +48,15 @@ async def _send_photos_as_video(call: CallbackQuery, st: dict, uid: int, label: 
     name_prefix = f"slideshow_{uid}_{int(time.time())}"
     out_path: Path = None
     try:
-        out_path = await build_photo_slideshow_video(
-            session, photo_urls, st.get("music"), Path("."), name_prefix
-        )
+        out_path = await build_photo_slideshow_video(session, photo_urls, st.get("music"), Path("."), name_prefix)
 
         description = st.get("description")
         req_id = new_req_id()
         cleanup_video_extras()
         if st.get("music") or description:
             video_extras[req_id] = {
-                "music": st.get("music"),
-                "description": description,
-                "src": st.get("src"),
-                "uid": uid,
-                "ts": time.time(),
+                "music": st.get("music"), "description": description,
+                "src": st.get("src"), "uid": uid, "ts": time.time(),
             }
 
         with contextlib.suppress(Exception):
@@ -75,24 +64,21 @@ async def _send_photos_as_video(call: CallbackQuery, st: dict, uid: int, label: 
                 await status.delete()
 
         await call.message.answer_video(
-            FSInputFile(out_path),
-            caption=CAPTION_VIDEO,
-            parse_mode="HTML",
+            FSInputFile(out_path), caption=CAPTION_VIDEO, parse_mode="HTML",
             reply_markup=under_video_kb(has_music=bool(st.get("music")), has_description=bool(description), req_id=req_id),
         )
         store.inc_download(uid, "video", items=1, source="tiktok")
         await after_download_hooks(call.bot, uid, label)
-
     except Exception as e:
         with contextlib.suppress(Exception):
+            msg = "❌ Не получилось собрать видео из фото. Попробуй ещё раз позже."
             if status:
-                await status.edit_text("❌ Не получилось собрать видео из фото. Попробуй ещё раз позже.")
+                await status.edit_text(msg)
             else:
-                await call.message.answer("❌ Не получилось собрать видео из фото. Попробуй ещё раз позже.")
+                await call.message.answer(msg)
         with contextlib.suppress(Exception):
             await log_event(
-                call.bot,
-                "dlerr",
+                call.bot, "dlerr",
                 [
                     "❌ Категория: <b>Ошибка сборки фото-видео</b>",
                     f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
@@ -117,12 +103,15 @@ async def picker_cb(call: CallbackQuery):
         await call.answer("Вы в бане.", show_alert=True)
         return
 
+    if not is_admin(uid) and store.is_maintenance():
+        await call.answer(plain(store.get_maintenance_text()), show_alert=True)
+        return
+
     cleanup_pending()
 
     parts = (call.data or "").split(":")
     act = parts[1] if len(parts) > 1 else ""
 
-    # У "mode" особая форма callback_data: pk:mode:{photo|video}:{req_id}
     if act == "mode":
         mode = parts[2] if len(parts) > 2 else ""
         req_id = parts[3] if len(parts) > 3 else ""
@@ -150,7 +139,6 @@ async def picker_cb(call: CallbackQuery):
                 await add_download_strike(call.bot, uid, label, "Лимит скачиваний", src=st.get("src"))
                 await call.answer()
                 return
-
             pending.pop(req_id, None)
             with contextlib.suppress(Exception):
                 await call.message.delete()

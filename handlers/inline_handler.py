@@ -37,7 +37,7 @@ from aiogram.types import (
 
 from globals_state import dp
 import globals_state
-from config import LOG_CHANNEL_ID, MAX_VIDEO_BYTES, CAPTION_VIDEO, YOUTUBE_MAX_DURATION_SEC
+from config import INLINE_CACHE_CHANNEL_ID, MAX_VIDEO_BYTES, CAPTION_VIDEO, YOUTUBE_MAX_DURATION_SEC
 from helpers import (
     is_tiktok, extract_tiktok_url, normalize_tiktok_url,
     is_youtube, extract_youtube_url, normalize_youtube_url,
@@ -83,8 +83,13 @@ async def _resolve_and_download(platform: str, url: str, out_dir: Path) -> Path:
         if not switcher:
             raise RuntimeError("provider switcher не инициализирован")
         media, provider = await switcher.get_media(url, raw_url=url)
-        if not media.video:
-            raise RuntimeError("Это фото-слайдшоу без видео — инлайн поддерживает только видео")
+        # Важно: проверяем именно media.photos, а не только media.video —
+        # у tikwm для фото-постов (нет отдельного видео) поле "play"/"wmplay"
+        # иногда оказывается заполнено ссылкой на МУЗЫКУ поста (это баг их
+        # API, не наш) — раньше это приводило к тому, что инлайн вместо
+        # видео "скачивал" и присылал музыку под видом видео.
+        if media.photos or not media.video:
+            raise RuntimeError("Это фото-слайдшоу — инлайн поддерживает только видео")
         tmp_path = out_dir / f"inline_{uuid.uuid4().hex[:10]}.mp4"
         await provider.download_to_file(media.video, tmp_path, MAX_VIDEO_BYTES, stage="inline_video")
         return tmp_path
@@ -98,7 +103,13 @@ async def _resolve_and_download(platform: str, url: str, out_dir: Path) -> Path:
 
 
 async def _download_and_cache(platform: str, url: str, uid: int) -> str:
-    """Качает видео, кладёт в служебный канал (чтобы получить file_id) и кэширует. Возвращает file_id."""
+    """Качает видео, кладёт в ТЕХНИЧЕСКИЙ канал (не логи!) чтобы получить file_id, и кэширует. Возвращает file_id."""
+    if not INLINE_CACHE_CHANNEL_ID:
+        raise RuntimeError(
+            "Инлайн-режим не настроен: не задан INLINE_CACHE_CHANNEL_ID "
+            "(отдельный технический канал, НЕ канал логов — см. .env)"
+        )
+
     tmp_path: Optional[Path] = None
     try:
         tmp_path = await _resolve_and_download(platform, url, Path("."))
@@ -113,10 +124,11 @@ async def _download_and_cache(platform: str, url: str, uid: int) -> str:
         if not bot:
             raise RuntimeError("bot недоступен")
 
-        # Кладём в служебный канал, чтобы получить постоянный file_id — его
-        # же используем и для ответа сейчас, и для кэша на будущее (повторные
-        # запросы этой ссылки больше не будут качать заново).
-        cache_msg = await bot.send_video(LOG_CHANNEL_ID, FSInputFile(tmp_path))
+        # Кладём в ОТДЕЛЬНЫЙ технический канал (не в лог-канал!), чтобы
+        # получить постоянный file_id — его же используем и для ответа
+        # сейчас, и для кэша на будущее (повторные запросы этой ссылки
+        # больше не будут качать заново). В админ-логи это НЕ попадает.
+        cache_msg = await bot.send_video(INLINE_CACHE_CHANNEL_ID, FSInputFile(tmp_path))
         file_id = cache_msg.video.file_id
         store.set_inline_cache(_cache_key(url), file_id, kind="video")
 
