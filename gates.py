@@ -49,6 +49,11 @@ async def gate_message(message: Message, label: str) -> bool:
     if is_admin(uid):
         return True
 
+    if store.is_maintenance():
+        with_html = "🛠 <b>Технические работы</b>\n\n" + html_escape(store.get_maintenance_text())
+        await message.answer(with_html, parse_mode="HTML")
+        return False
+
     text = (message.text or "").strip()
 
     if is_chatty_message(text) or text.startswith("/"):
@@ -92,6 +97,10 @@ async def gate_callback(call: CallbackQuery, label: str) -> bool:
 
     if is_admin(uid):
         return True
+
+    if store.is_maintenance():
+        await call.answer(plain(store.get_maintenance_text()), show_alert=True)
+        return False
 
     data = call.data or ""
     if data.startswith("pk:"):

@@ -128,6 +128,7 @@ class Storage:
             "gift_requests_seq": 0,
             "download_counters": {},  # uid_str -> общее кол-во скачиваний (для напоминаний про /ref)
             "inline_cache": {},  # url_hash -> {"file_id","kind","ts"} — кэш для inline-режима
+            "maintenance": {"enabled": False, "text": ""},  # технический режим (/tex)
         }
 
     # ---------- async load ----------
@@ -430,6 +431,20 @@ class Storage:
             for k in dead:
                 bans.pop(k, None)
             self._mark_dirty()
+
+    # ---------- технический режим (/tex) ----------
+    def is_maintenance(self) -> bool:
+        return bool((self.data.get("maintenance") or {}).get("enabled"))
+
+    def get_maintenance_text(self) -> str:
+        return str((self.data.get("maintenance") or {}).get("text") or "🛠 Ведутся технические работы. Возвращайтесь чуть позже!")
+
+    def set_maintenance(self, enabled: bool, text: str = "") -> None:
+        m = self.data.setdefault("maintenance", {})
+        m["enabled"] = bool(enabled)
+        if text:
+            m["text"] = text
+        self._mark_dirty()
 
     def get_ban(self, uid: int) -> Optional[Dict[str, Any]]:
         self._cleanup_expired_bans()

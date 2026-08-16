@@ -1,34 +1,20 @@
 """
 Реферальная система + магазин подарков за баллы.
 
-Логика формирования текстов и временное состояние
-(ожидание подтверждения покупки) — здесь.
-Хендлеры команд/колбэков — в handlers/referral_commands.py
-и handlers/referral_callbacks.py.
-
-Подарки выдаются вручную администрацией —
+Логика формирования текстов и временное состояние (ожидание подтверждения
+покупки) — здесь. Хендлеры команд/колбэков — в handlers/referral_commands.py
+и handlers/referral_callbacks.py. Подарки выдаются вручную администрацией —
 бот только ведёт учёт баллов, рефералов и заявок.
 """
-
 import contextlib
 from typing import Dict, List, Optional
 
-from aiogram.types import MessageEntity
-
-from config import (
-    BOT_USERNAME,
-    GIFTS,
-    GIFTS_BY_KEY,
-    REF_POINTS_PER_REFERRAL,
-    REF_TOP_LIMIT,
-)
+from config import BOT_USERNAME, GIFTS, GIFTS_BY_KEY, REF_POINTS_PER_REFERRAL, REF_TOP_LIMIT
 from helpers import html_escape
 from storage import store
 
-
 # uid -> gift_key: ждём подтверждения покупки этого подарка
 pending_gift_purchase: Dict[int, str] = {}
-
 PENDING_GIFT_TTL_SEC = 300
 
 DIVIDER = "━━━━━━━━━━━━━━━━━━━━"
@@ -44,7 +30,6 @@ def gift_by_key(key: str) -> Optional[dict]:
 
 def ref_menu_text(uid: int) -> str:
     rs = store.get_ref_stats(uid)
-
     return (
         "🎁 <b>Реферальная система TikSaves</b>\n"
         f"{DIVIDER}\n\n"
@@ -62,162 +47,49 @@ def _gifts_grouped_by_price() -> List[tuple]:
     """Группирует каталог подарков по цене, сохраняя порядок появления."""
     order: List[int] = []
     groups: Dict[int, List[dict]] = {}
-
     for g in GIFTS:
         price = g["price"]
         groups.setdefault(price, []).append(g)
-
         if price not in order:
             order.append(price)
-
     return [(price, groups[price]) for price in order]
 
 
-def gift_shop_text(uid: int) -> tuple[str, list[MessageEntity]]:
-    """
-    Формирует текст магазина и entities для Premium Custom Emoji.
-    """
-
+def gift_shop_text(uid: int) -> str:
     rs = store.get_ref_stats(uid)
-
     lines = [
         "🎁 <b>Магазин подарков</b>",
         f"{DIVIDER}\n",
         f"🎟 Твой баланс: <b>{rs['ref_points']}</b>\n",
         "Выбирай подарок — жми кнопку ниже 👇\n",
     ]
-
-    text = "\n".join(lines) + "\n"
-
-    entities: list[MessageEntity] = []
-
     for price, gifts in _gifts_grouped_by_price():
-
-        text += f"<b>{price} 🎟</b>\n"
-
-        for index, gift in enumerate(gifts):
-
-            emoji = gift.get("emoji", "")
-            name = html_escape(gift.get("name", "?"))
-
-            # Позиция emoji в UTF-16
-            offset = len(text.encode("utf-16-le")) // 2
-
-            text += f"{emoji} {name}"
-
-            emoji_length = len(emoji.encode("utf-16-le")) // 2
-
-            custom_emoji_id = gift.get("custom_emoji_id")
-
-            if custom_emoji_id:
-                entities.append(
-                    MessageEntity(
-                        type="custom_emoji",
-                        offset=offset,
-                        length=emoji_length,
-                        custom_emoji_id=str(custom_emoji_id),
-                    )
-                )
-
-            if index < len(gifts) - 1:
-                text += "  •  "
-
-        text += "\n\n"
-
-    return text.rstrip(), entities
+        names = "  •  ".join(f"{g['emoji']} {html_escape(g['name'])}" for g in gifts)
+        lines.append(f"<b>{price} 🎟</b>\n{names}\n")
+    return "\n".join(lines)
 
 
-def gift_confirm_text(
-    gift: dict,
-) -> tuple[str, list[MessageEntity]]:
-    """
-    Текст подтверждения покупки + Premium Custom Emoji.
-    """
-
-    emoji = gift.get("emoji", "")
-    name = html_escape(gift.get("name", "?"))
-
-    text = (
+def gift_confirm_text(gift: dict) -> str:
+    return (
         "🧾 <b>Подтверждение покупки</b>\n"
         f"{DIVIDER}\n\n"
-        f"🎁 Подарок: {emoji} <b>{name}</b>\n"
+        f"🎁 Подарок: {gift['emoji']} <b>{html_escape(gift['name'])}</b>\n"
         f"🎟 Стоимость: <b>{gift['price']}</b> баллов\n\n"
-        "После подтверждения баллы спишутся, а заявку обработает "
-        "администрация вручную.\n\n"
+        "После подтверждения баллы спишутся, а заявку обработает администрация вручную.\n\n"
         "Продолжаем? 👇"
     )
 
-    entities = []
 
-    # Ищем emoji именно после "Подарок: "
-    marker = "🎁 Подарок: "
-    pos = text.find(marker)
-
-    if pos != -1:
-        emoji_offset = pos + len(marker)
-
-        offset = len(text[:emoji_offset].encode("utf-16-le"))
-        length = len(emoji.encode("utf-16-le")) // 2
-
-        custom_emoji_id = gift.get("custom_emoji_id")
-
-        if custom_emoji_id:
-            entities.append(
-                MessageEntity(
-                    type="custom_emoji",
-                    offset=offset,
-                    length=length,
-                    custom_emoji_id=str(custom_emoji_id),
-                )
-            )
-
-    return text, entities
-
-
-def gift_created_text(
-    gift: dict,
-) -> tuple[str, list[MessageEntity]]:
-    """
-    Текст после создания заявки + Premium Custom Emoji.
-    """
-
-    emoji = gift.get("emoji", "")
-    name = html_escape(gift.get("name", "?"))
-
-    text = (
+def gift_created_text(gift: dict) -> str:
+    return (
         "✅ <b>Заявка создана!</b>\n"
         f"{DIVIDER}\n\n"
-        f"🎁 Подарок: {emoji} <b>{name}</b>\n"
+        f"🎁 Подарок: {gift['emoji']} <b>{html_escape(gift['name'])}</b>\n"
         f"🎟 Списано: <b>{gift['price']}</b> баллов\n"
         "📌 Статус: <b>⏳ ожидает выдачи</b>\n\n"
         "Администратор скоро обработает заявку.\n"
         "Спасибо, что помогаешь развивать TikSaves ❤️"
     )
-
-    entities = []
-
-    marker = "🎁 Подарок: "
-    pos = text.find(marker)
-
-    if pos != -1:
-        emoji_offset = pos + len(marker)
-
-        offset = len(text[:emoji_offset].encode("utf-16-le"))
-        length = len(emoji.encode("utf-16-le")) // 2
-
-        custom_emoji_id = gift.get("custom_emoji_id")
-
-        if custom_emoji_id:
-            entities.append(
-                MessageEntity(
-                    type="custom_emoji",
-                    offset=offset,
-                    length=length,
-                    custom_emoji_id=str(custom_emoji_id),
-                )
-            )
-
-    return text, entities
 
 
 _STATUS_LABELS = {
@@ -229,85 +101,43 @@ _STATUS_LABELS = {
 
 def my_requests_text(uid: int) -> str:
     reqs = store.user_gift_requests(uid)
-
     if not reqs:
         return (
             "📦 <b>История заявок</b>\n"
             f"{DIVIDER}\n\n"
             "Пока пусто — загляни в 🎁 Магазин подарков и выбери что-нибудь!"
         )
-
-    lines = [
-        "📦 <b>История заявок</b>",
-        f"{DIVIDER}\n",
-    ]
-
+    lines = ["📦 <b>История заявок</b>", f"{DIVIDER}\n"]
     for i, r in enumerate(reqs, start=1):
         g = gift_by_key(r.get("gift_key", "")) or {}
-
         emoji = g.get("emoji", "🎁")
         name = r.get("gift_name") or g.get("name", "?")
-        status = _STATUS_LABELS.get(
-            r.get("status", ""),
-            str(r.get("status", "?")),
-        )
-
-        lines.append(
-            f"<b>{i}.</b> {emoji} {html_escape(name)} — {status}"
-        )
-
+        status = _STATUS_LABELS.get(r.get("status", ""), str(r.get("status", "?")))
+        lines.append(f"<b>{i}.</b> {emoji} {html_escape(name)} — {status}")
     return "\n".join(lines)
 
 
-def top_referrers_text(
-    uid: Optional[int] = None,
-    *,
-    limit: Optional[int] = None,
-) -> str:
-
+def top_referrers_text(uid: Optional[int] = None, *, limit: Optional[int] = None) -> str:
     top = store.top_referrers(limit or REF_TOP_LIMIT)
-
     medals = ["🥇", "🥈", "🥉"]
-
-    lines = [
-        "🏆 <b>Топ рефереров TikSaves</b>",
-        f"{DIVIDER}\n",
-    ]
-
+    lines = ["🏆 <b>Топ рефереров TikSaves</b>", f"{DIVIDER}\n"]
     if not top:
-        lines.append(
-            "Пока никто не пригласил ни одного друга — стань первым! 🚀"
-        )
-
+        lines.append("Пока никто не пригласил ни одного друга — стань первым! 🚀")
     for i, (ref_uid, cnt) in enumerate(top):
-
         medal = medals[i] if i < 3 else f"<b>{i + 1}.</b>"
-
         label = store.get_user_label(ref_uid)
-
-        lines.append(
-            f"{medal} {html_escape(label)} — 👥 <b>{cnt}</b>"
-        )
+        lines.append(f"{medal} {html_escape(label)} — 👥 <b>{cnt}</b>")
 
     if uid is None:
         return "\n".join(lines).rstrip()
 
     rank = store.ref_rank(uid)
     rs = store.get_ref_stats(uid)
-
     lines.append("")
-
     if rank:
-        lines.append(
-            f"📍 <b>Твоё место:</b> #{rank} — "
-            f"👥 {rs['referrals_count']} рефералов"
-        )
+        lines.append(f"📍 <b>Твоё место:</b> #{rank} — 👥 {rs['referrals_count']} рефералов")
     else:
-        lines.append(
-            f"📍 <b>Твоё место:</b> пока нет рефералов "
-            f"(у тебя {rs['referrals_count']})"
-        )
-
+        lines.append(f"📍 <b>Твоё место:</b> пока нет рефералов (у тебя {rs['referrals_count']})")
     return "\n".join(lines)
 
 
@@ -323,102 +153,67 @@ HOW_IT_WORKS_TEXT = (
 )
 
 
-def new_referral_notify_text(
-    new_user_label: str,
-    rs: Dict[str, int],
-) -> str:
-
+def new_referral_notify_text(new_user_label: str, rs: Dict[str, int]) -> str:
     return (
         "🎉 <b>Новый реферал!</b>\n"
         f"{DIVIDER}\n\n"
-        f"👤 {html_escape(new_user_label)} "
-        "перешёл по твоей ссылке и скачал своё первое видео!\n\n"
+        f"👤 {html_escape(new_user_label)} перешёл по твоей ссылке и скачал своё первое видео!\n\n"
         f"💎 Начислено: <b>+{REF_POINTS_PER_REFERRAL} 🎟</b>\n\n"
         f"👥 Всего рефералов: <b>{rs['referrals_count']}</b>\n"
         f"🎟 Баланс: <b>{rs['ref_points']}</b>"
     )
 
 
-async def reward_referral_if_first_download(
-    bot,
-    uid: int,
-    label: str,
-) -> None:
-
-    reward = store.try_reward_referral(
-        uid,
-        REF_POINTS_PER_REFERRAL,
-    )
-
+async def reward_referral_if_first_download(bot, uid: int, label: str) -> None:
+    """
+    Начисляет баллы пригласившему — только один раз, при первом успешном
+    скачивании uid (не при простом /start). Общая логика для всех источников
+    (TikTok/YouTube/Instagram/VK/Pinterest) — раньше дублировалась в каждом
+    хендлере отдельно.
+    """
+    reward = store.try_reward_referral(uid, REF_POINTS_PER_REFERRAL)
     if not reward:
         return
-
     with contextlib.suppress(Exception):
         await bot.send_message(
             reward["referrer_id"],
             new_referral_notify_text(
-                label,
-                {
-                    "referrals_count": reward["referrals_count"],
-                    "ref_points": reward["ref_points"],
-                },
+                label, {"referrals_count": reward["referrals_count"], "ref_points": reward["ref_points"]}
             ),
             parse_mode="HTML",
         )
 
 
-NUDGE_EVERY = 5
+NUDGE_EVERY = 5  # раз в сколько скачиваний может сработать напоминание
 
 
-async def _maybe_send_nudge(
-    bot,
-    uid: int,
-) -> None:
-
+async def _maybe_send_nudge(bot, uid: int) -> None:
+    """
+    Раз в NUDGE_EVERY любых скачиваний — ненавязчивое напоминание САМОМУ
+    СКАЧАВШЕМУ (не рассылка всем!). Тип сообщения выбирается случайно из
+    трёх: про рефералку, про донат, обычное общее — чтобы не заваливать
+    только одной темой (раньше реферальное напоминание было отдельным и
+    срабатывало в 10 раз чаще остальных двух).
+    """
     import random
-
-    from broadcast import (
-        REMINDER_MSG,
-        DONATE_REMINDER_MSG,
-        REFERRAL_REMINDER_MSG,
-    )
-
+    from broadcast import REMINDER_MSG, DONATE_REMINDER_MSG, REFERRAL_REMINDER_MSG
     from helpers import to_html_simple
 
     total = store.bump_download_counter(uid)
-
     if total % NUDGE_EVERY != 0:
         return
-
-    text = random.choice(
-        [
-            REMINDER_MSG,
-            DONATE_REMINDER_MSG,
-            REFERRAL_REMINDER_MSG,
-        ]
-    )
-
+    text = random.choice([REMINDER_MSG, DONATE_REMINDER_MSG, REFERRAL_REMINDER_MSG])
     with contextlib.suppress(Exception):
-        await bot.send_message(
-            uid,
-            to_html_simple(text),
-            parse_mode="HTML",
-        )
+        await bot.send_message(uid, to_html_simple(text), parse_mode="HTML")
 
 
-async def after_download_hooks(
-    bot,
-    uid: int,
-    label: str,
-) -> None:
-
-    await reward_referral_if_first_download(
-        bot,
-        uid,
-        label,
-    )
-
-    await _maybe_send_nudge(
-        bot,
-        uid,
-    )
+async def after_download_hooks(bot, uid: int, label: str) -> None:
+    """
+    Общие действия после ЛЮБОГО успешного скачивания (видео/фото, любой
+    источник): начисление баллов рефереру (если это первое скачивание
+    приглашённого) + периодическое персональное напоминание (раз в
+    NUDGE_EVERY скачиваний, случайный выбор из трёх типов) — только тому,
+    кто только что скачал, не рассылка всем.
+    """
+    await reward_referral_if_first_download(bot, uid, label)
+    await _maybe_send_nudge(bot, uid)

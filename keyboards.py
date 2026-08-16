@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import SUPPORT_USERNAME, CRYPTO_DONATE_URL, BOT_SHARE_URL, STARS_MIN, STARS_MAX, GIFTS, MAX_VIDEO_MB
+from config import SUPPORT_USERNAME, CRYPTO_DONATE_URL, DONATIONALERTS_URL, BOT_SHARE_URL, STARS_MIN, STARS_MAX, GIFTS, MAX_VIDEO_MB
 from helpers import html_escape, code
 
 # ================== STATS / TOP KEYBOARDS ==================
@@ -68,6 +68,7 @@ def donate_main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⭐ Донат звёздами", callback_data="donate:stars")],
+            [InlineKeyboardButton(text="💳 Donation Alerts", url=DONATIONALERTS_URL)],
             [InlineKeyboardButton(text="💲 Донат криптой", url=CRYPTO_DONATE_URL)],
             [InlineKeyboardButton(text="🆘 Поддержка", callback_data="donate:support")],
         ]
@@ -319,6 +320,10 @@ ADMIN_HELP_TEXT = (
     f"├ {code('/refpoints ID +50')} — начислить/списать баллы\n"
     f"├ {code('/refcount ID +3')} — скорректировать счётчик рефералов\n"
     f"└ {code('/refreset ID')} — обнулить баллы и рефералов\n\n"
+
+    "🛠 <b>Технический режим</b>\n"
+    f"├ {code('/tex текст')} — включить (бот отвечает этим текстом всем, кроме админов)\n"
+    f"└ {code('/tex off')} — выключить\n\n"
 
     "🚫 <b>Баны</b>\n"
     f"├ {code('/ban ID 2h причина')} — забанить\n"
