@@ -183,17 +183,17 @@ REF_TOP_LIMIT = int(os.getenv("REF_TOP_LIMIT", "10"))
 # Каталог подарков: ключ, эмодзи, название, цена в баллах.
 # Выдаются вручную администрацией — тут только учёт заявок/баланса.
 GIFTS = [
-    {"key": "bear_santa",      "emoji": "🎅", "name": "Мишка-Санта",         "price": 55, "tg_id": "5956217000635139069"},
-    {"key": "tree",            "emoji": "🎄", "name": "Новогодняя ёлка",      "price": 55, "tg_id": "5922558454332916696"},
-    {"key": "bear_heart",      "emoji": "💕", "name": "Мишка с сердечком",    "price": 55, "tg_id": "5800655655995968830"},
-    {"key": "heart_love",      "emoji": "💌", "name": "Сердце I LOVE U",      "price": 55, "tg_id": "5801108895304779062"},
-    {"key": "bear_flowers",    "emoji": "🌹", "name": "Мишка с цветами",      "price": 55, "tg_id": "5866352046986232958"},
-    {"key": "bear_leprechaun", "emoji": "🍀", "name": "Мишка-Лепрекон",       "price": 55, "tg_id": "5893356958802511476"},
-    {"key": "bear_clown",      "emoji": "🤡", "name": "Мишка-Клоун",          "price": 55, "tg_id": "5935895822435615975"},
-    {"key": "bear_rabbit",     "emoji": "🐰", "name": "Мишка-Заяц",           "price": 55, "tg_id": "5969796561943660080"},
-    {"key": "bear_hammer",     "emoji": "🔨", "name": "Мишка с молотком",     "price": 55, "tg_id": "6026193266406327981"},
-    {"key": "bear_ball",       "emoji": "⚽", "name": "Мишка с мячом",        "price": 55, "tg_id": "5974210632977745012"},
-    {"key": "bear_gun",        "emoji": "🔫", "name": "Мишка с пистолетиком", "price": 55, "tg_id": "6046178578163303744"},
+    {"key": "bear_santa",      "emoji": "🎅", "name": "Мишка-Санта",         "price": 54, "tg_id": "5956217000635139069"},
+    {"key": "tree",            "emoji": "🎄", "name": "Новогодняя ёлка",      "price": 54, "tg_id": "5922558454332916696"},
+    {"key": "bear_heart",      "emoji": "💕", "name": "Мишка с сердечком",    "price": 54, "tg_id": "5800655655995968830"},
+    {"key": "heart_love",      "emoji": "💌", "name": "Сердце I LOVE U",      "price": 54, "tg_id": "5801108895304779062"},
+    {"key": "bear_flowers",    "emoji": "🌹", "name": "Мишка с цветами",      "price": 54, "tg_id": "5866352046986232958"},
+    {"key": "bear_leprechaun", "emoji": "🍀", "name": "Мишка-Лепрекон",       "price": 54, "tg_id": "5893356958802511476"},
+    {"key": "bear_clown",      "emoji": "🤡", "name": "Мишка-Клоун",          "price": 54, "tg_id": "5935895822435615975"},
+    {"key": "bear_rabbit",     "emoji": "🐰", "name": "Мишка-Заяц",           "price": 54, "tg_id": "5969796561943660080"},
+    {"key": "bear_hammer",     "emoji": "🔨", "name": "Мишка с молотком",     "price": 54, "tg_id": "6026193266406327981"},
+    {"key": "bear_ball",       "emoji": "⚽", "name": "Мишка с мячом",        "price": 54, "tg_id": "5974210632977745012"},
+    {"key": "bear_gun",        "emoji": "🔫", "name": "Мишка с пистолетиком", "price": 54, "tg_id": "6046178578163303744"},
 ]
 GIFTS_BY_KEY = {g["key"]: g for g in GIFTS}
 
