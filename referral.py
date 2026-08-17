@@ -76,7 +76,7 @@ def gift_shop_text(uid: int) -> str:
         f"{DIVIDER}\n",
         f"🎟 <b>Твой баланс:</b> <b>{rs['ref_points']}</b> билетиков\n",
         "Выбери подарок из списка ниже 👇\n",
-        f"<b>💝 Цена каждого подарка:</b> <b>55⭐</b> или <b>500🎟</b>\n",
+        f"<b>💝 Цена каждого подарка:</b> <b>60⭐</b> или <b>500🎟</b>\n",
     ]
     lines.append(f"{DIVIDER}\n")
     names = "  •  ".join(f"{g['emoji']} {html_escape(g['name'])}" for g in GIFTS)
