@@ -31,7 +31,7 @@ REMINDER_MSG = (
 
 DONATE_REMINDER_MSG = (
     "💛 **Нравится бот?**\n\n"
-    "Если TikSaves помогает — поддержи проект через **/donate**: Telegram Stars ⭐️ или крипта 💲.\n\n"
+    "Если TikSaves помогает — поддержи проект через **/donate**: Telegram Stars ⭐️, крипта 💲, Donation Alerts\n\n"
     "Любая помощь идёт на хостинг и развитие бота — спасибо! 🙏"
 )
 
