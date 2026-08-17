@@ -78,7 +78,7 @@ async def youtube_handler(message: Message):
     tmp_path: Optional[Path] = None
 
     try:
-        async with download_sem:
+        async with lim.user_dl_lock(uid), download_sem:
             try:
                 info = await probe_youtube(url)
             except Exception as e:

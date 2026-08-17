@@ -101,7 +101,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
     status = await message.answer("⏳ Скачиваю…")
 
     try:
-        async with download_sem:
+        async with lim.user_dl_lock(uid), download_sem:
             with contextlib.suppress(Exception):
                 await status.edit_text("⏳ Скачиваю…")
             media, provider = await switcher.get_media(url or text, raw_url=url)

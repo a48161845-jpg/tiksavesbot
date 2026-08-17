@@ -112,7 +112,7 @@ async def other_sources_handler(message: Message):
     tmp_path: Optional[Path] = None
 
     try:
-        async with download_sem:
+        async with lim.user_dl_lock(uid), download_sem:
             try:
                 info = await probe_media(url)
             except Exception as e:

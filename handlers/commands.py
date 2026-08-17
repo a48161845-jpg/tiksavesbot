@@ -41,25 +41,31 @@ async def start_cmd(message: Message, command: CommandObject):
 
     is_new = store.register(uid)
     if is_new:
+        # Проверяем реф.ссылку до логирования
+        referral_info = "нет"
+        payload = (command.args or "").strip()
+        if payload.isdigit():
+            referrer_id = int(payload)
+            store.set_referral(uid, referrer_id)
+            referrer_label = store.get_user_label(referrer_id) or str(referrer_id)
+            referral_info = format_user_for_log(referrer_label, referrer_id)
+
         await log_event(
             message.bot,
             "user",
             [
                 "👋 Категория: <b>Приход пользователя</b>",
+                f"🫆 Реферал: {referral_info}",
                 f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
             ],
         )
-
-        # ---- реферальная система: /start?start=REFERRER_ID ----
-        # Баллы НЕ начисляются здесь — только фиксируем, кто кого пригласил.
-        # Начисление происходит один раз, при первом успешном скачивании
-        # приглашённого (см. _reward_referral_if_first_download в main_handler.py
-        # и handlers/picker_callbacks.py) — так реферал засчитывается только
-        # если реально начал пользоваться ботом, а не просто нажал /start.
+    else:
+        # Для существующего пользователя — только обновляем реф.данные если нужно
         payload = (command.args or "").strip()
         if payload.isdigit():
             referrer_id = int(payload)
-            store.set_referral(uid, referrer_id)
+            if store.get_referrer(uid) is None:
+                store.set_referral(uid, referrer_id)
 
     if not await gate_message(message, label):
         return

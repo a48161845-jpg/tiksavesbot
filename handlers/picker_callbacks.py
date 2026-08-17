@@ -287,6 +287,7 @@ async def picker_cb(call: CallbackQuery):
             await send_music_if_any(call.message, globals_state.g_provider, st.get("music"), uid=uid, label=label, src=src)
         if want_desc:
             await send_description_if_any(call.message, st.get("description"))
+            store.inc_description(uid)
 
         if cnt:
             await after_download_hooks(call.bot, uid, label)
@@ -337,6 +338,7 @@ async def picker_cb(call: CallbackQuery):
             await send_music_if_any(call.message, globals_state.g_provider, st.get("music"), uid=uid, label=label, src=src)
         if want_desc:
             await send_description_if_any(call.message, st.get("description"))
+            store.inc_description(uid)
 
         if cnt:
             await after_download_hooks(call.bot, uid, label)

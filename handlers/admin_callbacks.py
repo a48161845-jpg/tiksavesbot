@@ -23,6 +23,7 @@ from stats import (
     send_stats_message,
     send_top_message,
     _admin_banlist_text,
+    _admin_errors_text,
 )
 from broadcast import (
     REMINDER_MSG,
@@ -103,6 +104,14 @@ async def admin_cb(call: CallbackQuery):
                 await do_broadcast(call.message, uid, label, raw, already_html=True)
             return
         pending_admin_broadcast_text.pop(uid, None)
+        return
+
+    if cmd == "errors":
+        await log_admin_action_to_channel(call.bot, "Ошибки (кнопка)", [f"👤 Кто: <b>{format_user_for_log(label, uid)}</b>"])
+        if call.message:
+            with contextlib.suppress(Exception):
+                await call.message.edit_text(_admin_errors_text(), parse_mode="HTML", reply_markup=admin_back_kb())
+        await call.answer("Ок")
         return
 
     if cmd == "banlist":

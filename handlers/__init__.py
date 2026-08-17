@@ -15,6 +15,7 @@ from . import help_callbacks
 from . import referral_commands
 from . import referral_admin_commands
 from . import referral_callbacks
+from . import gift_message_handler
 from . import picker_callbacks
 from . import video_choice_callbacks
 from . import youtube_handler

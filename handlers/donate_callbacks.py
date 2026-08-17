@@ -29,6 +29,7 @@ from keyboards import (
     under_video_kb,
 )
 from donate import stars_valid, safe_edit, send_stars_invoice, waiting_stars_amount
+from referral import finalize_gift_stars_purchase
 
 
 @dp.callback_query(F.data.startswith("dl:"))
@@ -74,6 +75,7 @@ async def dl_cb(call: CallbackQuery):
         await call.answer("Отправляю описание…")
         if call.message:
             await send_description_if_any(call.message, desc)
+            store.inc_description(uid)
         with contextlib.suppress(Exception):
             if call.message:
                 await call.message.edit_reply_markup(
@@ -166,12 +168,21 @@ async def payment_ok(message: Message):
     if not await gate_message(message, label):
         return
 
+    payload = message.successful_payment.invoice_payload or ""
+
+    # Оплата подарка из магазина /ref (реальные звёзды, не донат) —
+    # обрабатывается отдельно, деньги НЕ зачисляются как донат/билетики.
+    if payload.startswith("gift_buy_"):
+        await finalize_gift_stars_purchase(message, uid, label)
+        return
+
     stars = int(message.successful_payment.total_amount)
-    store.add_stars(uid, stars)
+    tickets = store.add_stars(uid, stars)
 
     await message.answer(
         "✅ <b>Оплата прошла!</b>\n"
-        f"Получено: <b>{stars} ⭐</b>\n\n"
+        f"Получено: <b>{stars} ⭐</b>\n"
+        f"🎟 Начислено билетиков: <b>+{tickets}</b>\n\n"
         "Спасибо за поддержку 🙌",
         parse_mode="HTML",
     )
@@ -183,5 +194,6 @@ async def payment_ok(message: Message):
             "⭐ Категория: <b>Пополнение Stars</b>",
             f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
             f"💫 Сумма: <b>{stars} ⭐</b>",
+            f"🎟 Билетиков начислено: <b>+{tickets}</b>",
         ],
     )

@@ -222,56 +222,6 @@ async def banlist_cmd(message: Message):
     await message.answer("".join(lines), parse_mode="HTML")
 
 
-@dp.message(Command("baninfo"))
-async def baninfo_cmd(message: Message):
-    admin_id = message.from_user.id
-    admin_label = await resolve_user_label(message.bot, admin_id)
-    store.set_user_label(admin_id, admin_label)
-
-    if not is_admin(admin_id):
-        return
-    if not await gate_message(message, admin_label):
-        return
-
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) != 2 or not parts[1].isdigit():
-        await message.answer(f"Использование: {code('/baninfo 123')}", parse_mode="HTML")
-        return
-
-    uid = int(parts[1])
-    ban = store.get_ban(uid)
-    who_label = await resolve_user_label(message.bot, uid)
-    store.set_user_label(uid, who_label)
-
-    log_admin(admin_id, "baninfo", f"target={uid} banned={'yes' if ban else 'no'}")
-    await log_admin_action_to_channel(
-        message.bot,
-        "Просмотр бана",
-        [
-            f"👤 Кто: <b>{format_user_for_log(admin_label, admin_id)}</b>",
-            f"🙋‍♂️ Кого: <b>{format_user_for_log(who_label, uid)}</b>",
-        ],
-    )
-
-    if not ban:
-        await message.answer(f"ℹ️ Не в бане: <b>{format_user_for_log(who_label, uid)}</b>", parse_mode="HTML")
-        return
-
-    until = int(ban.get("until", 0))
-    reason = html_escape(str(ban.get("reason", "Не указана")))
-    by = int(ban.get("by", 0))
-    by_label = store.get_user_label(by)
-
-    await message.answer(
-        "🚫 <b>Информация о бане</b>\n\n"
-        f"👤 Пользователь: <b>{format_user_for_log(who_label, uid)}</b>\n"
-        f"⏳ До: <b>{format_msk(until)} МСК</b>\n"
-        f"📌 Причина: <b>{reason}</b>\n"
-        f"👑 Кто выдал: <b>{format_user_for_log(by_label, by)}</b>",
-        parse_mode="HTML",
-    )
-
-
 @dp.message(Command("info"))
 async def info_cmd(message: Message):
     admin_id = message.from_user.id
@@ -296,6 +246,8 @@ async def info_cmd(message: Message):
     who_label = await resolve_user_label(message.bot, uid)
     store.set_user_label(uid, who_label)
 
+    from stats import _profile_header_lines, _fmt_platform_breakdown, _donation_lines
+
     first_seen_ts = int((store.data.get("first_seen", {}) or {}).get(str(uid), 0))
     last_seen_ts = int((store.data.get("last_seen", {}) or {}).get(str(uid), 0))
     joined = format_msk(first_seen_ts) if first_seen_ts > 0 else "неизвестно"
@@ -303,36 +255,46 @@ async def info_cmd(message: Message):
 
     us_dl = (store.data.get("user_stats", {}) or {}).get("downloads", {}) or {}
     rec = us_dl.get(str(uid), {}) or {}
-    v_sent = int(rec.get("video_sent", 0))
     p_sent = int(rec.get("photos_sent", 0))
     v_ops = int(rec.get("video_ops", 0))
-    p_ops = int(rec.get("photo_ops", 0))
     a_sent = int(rec.get("audio_sent", 0))
-
-    stars_by_user = (store.data.get("user_stats", {}) or {}).get("stars", {}) or {}
-    stars = int(stars_by_user.get(str(uid), 0))
+    d_sent = int(rec.get("desc_sent", 0))
+    by_source = rec.get("by_source", {}) or {}
 
     ref_stats = store.get_ref_stats(uid)
     invited_cnt = len(store.referrals_of(uid))
 
     ban = store.get_ban(uid)
     if ban:
-        ban_text = f"🚫 Бан: <b>да</b> (до <b>{format_msk(int(ban.get('until', 0)))} МСК</b>)"
+        until = int(ban.get("until", 0))
+        reason = html_escape(str(ban.get("reason", "Не указана")))
+        by = int(ban.get("by", 0))
+        by_label = store.get_user_label(by) or str(by)
+        ban_block = (
+            "🚫 Бан: <b>да</b>\n"
+            f"├ Бан до: {code(format_msk(until))}\n"
+            f"├ Причина: <b>{reason}</b>\n"
+            f"└ Кто выдал: {format_user_for_log(by_label, by)}"
+        )
     else:
-        ban_text = "🚫 Бан: <b>нет</b>"
+        ban_block = "🚫 Бан: <b>нет</b>"
 
     await message.answer(
-        "👤 <b>Информация о пользователе</b>\n\n"
-        f"👤 Пользователь: <b>{format_user_for_log(who_label, uid)}</b>\n"
-        f"🕒 Первый визит: <b>{joined}</b>\n"
-        f"🕒 Последняя активность: <b>{last_seen}</b>\n"
-        f"{ban_text}\n\n"
-        f"🎬 Видео скачано: <b>{v_ops}</b> операций (файлов: <b>{v_sent}</b>)\n"
-        f"🖼️ Фото скачано: <b>{p_ops}</b> операций (фото: <b>{p_sent}</b>)\n"
-        f"🎵 Музыка скачано: <b>{a_sent}</b>\n"
-        f"⭐ Stars пожертвовано: <b>{stars}</b>\n\n"
-        f"🎁 Приглашено рефералов: <b>{invited_cnt}</b>\n"
-        f"🎟 Баллов начислено: <b>{ref_stats['ref_points']}</b>\n",
+        "👤 <b>Информация о пользователе</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{_profile_header_lines(uid)}\n\n"
+        f"🕒 Первое появление в боте: {code(joined)}\n"
+        f"🕒 Последняя активность: {code(last_seen)}\n\n"
+        f"{ban_block}\n\n"
+        f"🎬 Видео скачано: <b>{v_ops}</b>\n"
+        f"└  По платформам:\n{_fmt_platform_breakdown(by_source)}\n\n"
+        "🗃️ <b>Другие скачивания:</b>\n"
+        f"├ 🖼️ Фото скачано: <b>{p_sent}</b>\n"
+        f"├ 🎵 Аудио скачано: <b>{a_sent}</b>\n"
+        f"└ 📝 Описаний скачано: <b>{d_sent}</b>\n\n"
+        f"{_donation_lines(uid)}\n\n"
+        f"🎁 Приглашено рефералов: <b>{invited_cnt}</b> — /ref\n"
+        f"🎟️ Баланс билетиков реферальной системы: <b>{ref_stats['ref_points']}</b>",
         parse_mode="HTML",
     )
 
@@ -469,25 +431,6 @@ async def advertisement_message_cmd(message: Message):
         parse_mode="HTML",
         reply_markup=admin_broadcast_confirm_kb("advert"),
     )
-
-
-@dp.message(Command("dblog"))
-async def dblog_cmd(message: Message):
-    """Отправить текстовый отчёт по БД в лог-канал (файлом .txt)."""
-    admin_id = message.from_user.id
-    admin_label = await resolve_user_label(message.bot, admin_id)
-    store.set_user_label(admin_id, admin_label)
-
-    if not is_admin(admin_id):
-        return
-    if not await gate_message(message, admin_label):
-        return
-
-    from db_report import send_db_report
-    log_admin(admin_id, "dblog", "manual db report requested")
-    await message.answer("📊 Генерирую отчёт…")
-    await send_db_report(message.bot, title="Отчёт БД (ручной запрос)")
-    await message.answer("✅ Отчёт-файл отправлен в лог-канал.")
 
 
 @dp.message(Command("dbfile"))
