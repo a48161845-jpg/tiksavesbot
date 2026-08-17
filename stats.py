@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Tuple
 
 from aiogram.types import Message, LinkPreviewOptions
 
-from helpers import html_escape, msk_now, period_keys, week_range_str, iter_day_keys, format_msk
+from helpers import html_escape, code, msk_now, period_keys, week_range_str, iter_day_keys, format_msk
 from storage import store
 from admin_log_file import log_admin
 from logging_channel import log_admin_action_to_channel, format_user_for_log
@@ -65,6 +65,25 @@ _SOURCE_LABELS = {
     "vk": "🔵 VK",
     "pinterest": "📌 Pinterest",
 }
+
+
+_PLATFORM_ORDER = [
+    ("tiktok", "🎵 TikTok"),
+    ("instagram", "📸 Instagram"),
+    ("youtube", "▶️ YouTube"),
+    ("pinterest", "📌 Pinterest"),
+    ("vk", "🔵 VK"),
+]
+
+
+def _fmt_platform_breakdown(by_source: Dict[str, int]) -> str:
+    """Разбивка видео по платформам в фиксированном порядке (для /me и /info)."""
+    lines = []
+    for i, (key, label) in enumerate(_PLATFORM_ORDER):
+        val = int((by_source or {}).get(key, 0))
+        prefix = "└" if i == len(_PLATFORM_ORDER) - 1 else "├"
+        lines.append(f"   {prefix} {label}: <b>{val}</b>")
+    return "\n".join(lines)
 
 
 def _fmt_by_source(by_source: Dict[str, int]) -> str:
@@ -220,36 +239,33 @@ def _user_stats_range_text(uid: int, start_dt: datetime, end_dt: datetime) -> st
     mp = (store.data.get("user_stats_period", {}) or {}).get("d", {}) or {}
     rec_by_day = mp.get(str(uid), {}) or {}
 
-    v_sent = p_sent = v_ops = p_ops = stars = 0
-    a_sent = 0
+    p_sent = v_ops = stars = money = a_sent = d_sent = 0
+    by_source: Dict[str, int] = {}
     for day_key in day_keys:
         rec = rec_by_day.get(day_key, {})
         if not rec:
             continue
-        v_sent += int(rec.get("video_sent", 0))
         p_sent += int(rec.get("photos_sent", 0))
         v_ops += int(rec.get("video_ops", 0))
-        p_ops += int(rec.get("photo_ops", 0))
         a_sent += int(rec.get("audio_sent", 0))
+        d_sent += int(rec.get("desc_sent", 0))
         stars += int(rec.get("stars", 0))
-
-
-    first_seen_ts = int((store.data.get("first_seen", {}) or {}).get(str(uid), 0))
-    if first_seen_ts > 0:
-        joined = format_msk(first_seen_ts)
-    else:
-        last_seen_ts = int((store.data.get("last_seen", {}) or {}).get(str(uid), 0))
-        joined = format_msk(last_seen_ts) if last_seen_ts > 0 else "неизвестно"
+        money += int(rec.get("money", 0))
+        for k, v in (rec.get("by_source", {}) or {}).items():
+            by_source[k] = by_source.get(k, 0) + int(v)
 
     return (
         "📊 <b>Твоя статистика (диапазон)</b>\n"
-        f"<i>{start_dt.strftime('%d.%m.%Y')} - {end_dt.strftime('%d.%m.%Y')}</i>\n\n"
-        f"👤 ID: <b>{uid}</b>\n"
-        f"🕒 Первый визит: <b>{joined}</b>\n\n"
-        f"🎬 Видео скачано: <b>{v_ops}</b> операций (файлов: <b>{v_sent}</b>)\n"
-        f"🖼️ Фото скачано: <b>{p_ops}</b> операций (фото: <b>{p_sent}</b>)\n"
-        f"🎵 Музыка скачано: <b>{a_sent}</b>\n"
+        f"<i>{start_dt.strftime('%d.%m.%Y')} - {end_dt.strftime('%d.%m.%Y')}</i>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🎬 Видео скачано: <b>{v_ops}</b>\n"
+        f"└  По платформам:\n{_fmt_platform_breakdown(by_source)}\n\n"
+        "🗃️ <b>Другие скачивания:</b>\n"
+        f"├ 🖼️ Фото скачано: <b>{p_sent}</b>\n"
+        f"├ 🎵 Аудио скачано: <b>{a_sent}</b>\n"
+        f"└ 📝 Описаний скачано: <b>{d_sent}</b>\n\n"
         f"⭐ Stars пожертвовано: <b>{stars}</b>\n"
+        f"🪙 Рублей пожертвовано: <b>{money}₽</b>"
     )
 
 def _admin_stats_text(mode: str) -> str:
@@ -257,7 +273,7 @@ def _admin_stats_text(mode: str) -> str:
 
     if mode == "all":
         bucket = stats_root.get("all", {}) or {}
-        title = "📊 <b>Статистика: всё время</b>"
+        title = "📊 <b>Статистика · всё время</b>"
     else:
         keys = period_keys(msk_now())
         key = keys[mode]
@@ -276,6 +292,7 @@ def _admin_stats_text(mode: str) -> str:
     video_sent = int(dls.get("video_sent", 0))
     photos_sent = int(dls.get("photos_sent", 0))
     audio_sent = int(dls.get("audio_sent", 0))
+    desc_sent = int(dls.get("desc_sent", 0))
     video_ops = int(dls.get("video_ops", 0))
     photo_ops = int(dls.get("photo_ops", 0))
     by_source = dls.get("by_source", {}) or {}
@@ -289,6 +306,7 @@ def _admin_stats_text(mode: str) -> str:
     active_bans = len(store.list_bans())
 
     stars_total = int(bucket.get("stars_total", 0))
+    money_total = int(bucket.get("money_total", 0))
 
     us_dl = (store.data.get("user_stats", {}) or {}).get("downloads", {}) or {}
     active_all = sum(1 for _u, rec in us_dl.items() if int(rec.get("video_ops", 0)) + int(rec.get("photo_ops", 0)) > 0)
@@ -338,20 +356,37 @@ def _admin_stats_text(mode: str) -> str:
         return "\n".join([f"• <b>{html_escape(str(k))}</b>: {int(v)}" for k, v in pairs])
 
     if mode == "all":
+        # Глобальная статистика БД (пункт 10)
         keys_all = period_keys(msk_now())
         users_new_day = int((stats_root.get("d", {}) or {}).get(keys_all["d"], {}).get("users_new", 0))
         users_new_week = int((stats_root.get("n", {}) or {}).get(keys_all["n"], {}).get("users_new", 0))
         users_new_month = int((stats_root.get("m", {}) or {}).get(keys_all["m"], {}).get("users_new", 0))
-        users_new_year = int((stats_root.get("y", {}) or {}).get(keys_all["y"], {}).get("users_new", 0))
-        users_new_all = int((stats_root.get("all", {}) or {}).get("users_new", 0))
-        users_new_block = (
-            "🆕 <b>Новые пользователи</b>\n"
-            f"├ Сегодня: <b>{users_new_day}</b>\n"
-            f"├ Неделя: <b>{users_new_week}</b>\n"
-            f"├ Месяц: <b>{users_new_month}</b>\n"
-            f"├ Год: <b>{users_new_year}</b>\n"
-            f"└ Всего: <b>{users_new_all}</b>\n"
+        
+        return (
+            f"{title}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👥 <b>ПОЛЬЗОВАТЕЛИ</b>\n"
+            f"├ Всего: <b>{users_total}</b>\n"
+            f"├ 🆕 Сегодня: +<b>{users_new_day}</b>\n"
+            f"├ 📅 Неделя: +<b>{users_new_week}</b>\n"
+            f"└ 🗓️ Месяц: +<b>{users_new_month}</b>\n\n"
+            f"⬇️ <b>СКАЧИВАНИЯ</b>\n"
+            f"├ 🎬 Видео: <b>{video_sent}</b>\n"
+            f"├ 🖼️ Фото: <b>{photos_sent}</b> (фото)\n"
+            f"├ 📝 Описание: <b>{desc_sent}</b>\n"
+            f"└ 🎵 Музыка: <b>{audio_sent}</b>\n\n"
+            f"📱 <b>ИСТОЧНИКИ</b>\n"
+            f"{_fmt_by_source(by_source)}\n\n"
+            f"⭐ <b>МОНЕТИЗАЦИЯ</b>\n"
+            f"├  🎁 Приглашено в бота: <b>{store.total_referrals_count()}</b>\n"
+            f"└ 💛 Донаты:\n"
+            f"     ├ ⭐ Донат звёздами: <b>{stars_total}</b>\n"
+            f"     └ 🪙 Донат в рублях: <b>{money_total}₽</b>\n\n"
+            f"💥 <b>ОШИБКИ</b>\n"
+            f"└ Всего: <b>{err_total}</b>"
         )
+    
+    # Статистика по периодам (день/неделя/месяц/год)
     else:
         users_new_block = f"🆕 Новых за период: <b>{users_new}</b>\n"
 
@@ -421,22 +456,26 @@ def _top_text_from_totals(title: str, totals: Dict[int, Dict[str, int]]) -> str:
         if not items or all(v <= 0 for _u, v in items):
             return "-"
         lines = []
-        for uid, val in items:
+        for i, (uid, val) in enumerate(items):
             if val <= 0:
                 continue
             who = store.get_user_label(uid)
-            lines.append(f"• <b>{format_user_for_log(who, uid)}</b>: {icon} <b>{val}</b> {suffix}")
+            # Форматируем как в пункте 15
+            lines.append(f"• {format_user_for_log(who, uid)}: {icon} <b>{val}</b> {suffix}")
         return "\n".join(lines) if lines else "-"
 
     top_stars = top_by("stars")
+    top_money = top_by("money")
     top_video = top_by("video_ops")
     top_photo = top_by("photo_ops")
 
     return (
-        f"{title}\n\n"
+        f"{title}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"⭐ <b>Топ Stars</b>\n{fmt_list(top_stars, '⭐', '⭐')}\n\n"
-        f"🎬 <b>Топ видео</b>\n{fmt_list(top_video, '🎬', 'шт')}\n\n"
-        f"🖼️ <b>Топ фото</b>\n{fmt_list(top_photo, '🖼️', 'шт')}\n\n"
+        f"🪙 <b>Топ в рублях</b>\n{fmt_list(top_money, '🪙', '₽')}\n\n"
+        f"🎬 <b>Топ видео</b>\n{fmt_list(top_video, '🎬', '🎬')}\n\n"
+        f"🖼️ <b>Топ фото</b>\n{fmt_list(top_photo, '🖼️', '🖼️')}\n\n"
         f"{_top_referrals_section()}"
     )
 
@@ -446,6 +485,7 @@ def _top_text_for_mode(mode: str) -> str:
         title = "🏆 <b>Топ: всё время</b>"
         us_dl = (store.data.get("user_stats", {}) or {}).get("downloads", {}) or {}
         stars_by_user = (store.data.get("user_stats", {}) or {}).get("stars", {}) or {}
+        money_by_user = (store.data.get("user_stats", {}) or {}).get("money", {}) or {}
         totals: Dict[int, Dict[str, int]] = {}
         for uid_str, rec in us_dl.items():
             try:
@@ -454,8 +494,9 @@ def _top_text_for_mode(mode: str) -> str:
                 continue
             totals[uid] = {
                 "video_ops": int(rec.get("video_ops", 0)),
-                "photo_ops": int(rec.get("photo_ops", 0)),
+                "photo_ops": int(rec.get("photos_sent", 0)),
                 "stars": int(stars_by_user.get(str(uid), 0)),
+                "money": int(money_by_user.get(str(uid), 0)),
             }
         return _top_text_from_totals(title, totals)
 
@@ -482,8 +523,9 @@ def _top_text_for_mode(mode: str) -> str:
             continue
         totals[uid] = {
             "video_ops": int(rec.get("video_ops", 0)),
-            "photo_ops": int(rec.get("photo_ops", 0)),
+            "photo_ops": int(rec.get("photos_sent", 0)),
             "stars": int(rec.get("stars", 0)),
+            "money": int(rec.get("money", 0)),
         }
     return _top_text_from_totals(title, totals)
 
@@ -496,30 +538,64 @@ def _top_text_for_range(start_dt: datetime, end_dt: datetime) -> str:
     )
     return _top_text_from_totals(title, totals)
 
+def _profile_header_lines(uid: int) -> str:
+    """👤 Nickname (ссылка на профиль) + 🫆 Username/ID (моно ID) — общий блок для /me и /info."""
+    info = store.data.get("users_info", {}).get(str(uid)) or {}
+    username = (info.get("username") or "").strip()
+    first = (info.get("first_name") or "").strip()
+    last = (info.get("last_name") or "").strip()
+    name = " ".join([x for x in [first, last] if x]).strip()
+    nickname_display = name or (f"@{username}" if username else str(uid))
+    profile_url = f"https://t.me/{username}" if username else f"tg://user?id={uid}"
+    nickname_line = f'👤 Nickname: <a href="{profile_url}">{html_escape(nickname_display)}</a>'
+    uname_part = f"@{html_escape(username)}" if username else "—"
+    id_line = f"🫆 Username/ID: {uname_part}({code(uid)})"
+    return nickname_line + "\n" + id_line
+
+
+def _donation_lines(uid: int) -> str:
+    stars = store.get_user_stars(uid)
+    money = store.get_user_money(uid)
+    return (
+        "💛 <b>Донаты:</b>\n"
+        f"├ ⭐ Донат звёздами: <b>{stars}</b>\n"
+        f"└ 🪙 Донат в рублях (крипто/DonationAlerts): <b>{money}₽</b>"
+    )
+
+
 def _user_stats_text(uid: int) -> str:
     us_dl = (store.data.get("user_stats", {}) or {}).get("downloads", {}) or {}
     rec = us_dl.get(str(uid), {}) or {}
-    v_sent = int(rec.get("video_sent", 0))
     p_sent = int(rec.get("photos_sent", 0))
     v_ops = int(rec.get("video_ops", 0))
-    p_ops = int(rec.get("photo_ops", 0))
     a_sent = int(rec.get("audio_sent", 0))
-    stars_by_user = (store.data.get("user_stats", {}) or {}).get("stars", {}) or {}
-    stars = int(stars_by_user.get(str(uid), 0))
+    d_sent = int(rec.get("desc_sent", 0))
+    by_source = rec.get("by_source", {}) or {}
+
     first_seen_ts = int((store.data.get("first_seen", {}) or {}).get(str(uid), 0))
     if first_seen_ts > 0:
         joined = format_msk(first_seen_ts)
     else:
         last_seen_ts = int((store.data.get("last_seen", {}) or {}).get(str(uid), 0))
         joined = format_msk(last_seen_ts) if last_seen_ts > 0 else "неизвестно"
+
+    ref_stats = store.get_ref_stats(uid)
+    invited_cnt = len(store.referrals_of(uid))
+
     return (
-        "📊 <b>Твоя статистика (всё время)</b>\n\n"
-        f"👤 ID: <b>{uid}</b>\n"
-        f"🕒 Первый визит: <b>{joined}</b>\n\n"
-        f"🎬 Видео скачано: <b>{v_ops}</b> операций (файлов: <b>{v_sent}</b>)\n"
-        f"🖼️ Фото скачано: <b>{p_ops}</b> операций (фото: <b>{p_sent}</b>)\n"
-        f"🎵 Музыка скачано: <b>{a_sent}</b>\n"
-        f"⭐ Пожертвовано Stars: <b>{stars}</b>\n"
+        "📊 <b>Твоя статистика:</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{_profile_header_lines(uid)}\n\n"
+        f"🕒 Первое появление в боте: {code(joined)}\n\n"
+        f"🎬 Видео скачано: <b>{v_ops}</b>\n"
+        f"└  По платформам:\n{_fmt_platform_breakdown(by_source)}\n\n"
+        "🗃️ <b>Другие скачивания:</b>\n"
+        f"├ 🖼️ Фото скачано: <b>{p_sent}</b>\n"
+        f"├ 🎵 Аудио скачано: <b>{a_sent}</b>\n"
+        f"└ 📝 Описаний скачано: <b>{d_sent}</b>\n\n"
+        f"{_donation_lines(uid)}\n\n"
+        f"🎁 Приглашено рефералов: <b>{invited_cnt}</b> — /ref\n"
+        f"🎟️ Баланс билетиков реферальной системы: <b>{ref_stats['ref_points']}</b>"
     )
 
 def _user_stats_period_text(uid: int, mode: str) -> str:
@@ -528,12 +604,11 @@ def _user_stats_period_text(uid: int, mode: str) -> str:
     mp = (store.data.get("user_stats_period", {}) or {}).get(mode, {}) or {}
     rec = (mp.get(str(uid), {}) or {}).get(key, {}) if key else {}
     rec = rec or {}
-    v_sent = int(rec.get("video_sent", 0))
     p_sent = int(rec.get("photos_sent", 0))
     v_ops = int(rec.get("video_ops", 0))
-    p_ops = int(rec.get("photo_ops", 0))
     a_sent = int(rec.get("audio_sent", 0))
-    stars = int(rec.get("stars", 0))
+    d_sent = int(rec.get("desc_sent", 0))
+    by_source = rec.get("by_source", {}) or {}
     nice = {"d": "день", "n": "неделя", "m": "месяц", "y": "год"}[mode]
     if mode == "n":
         key_view = week_range_str(msk_now())
@@ -541,11 +616,16 @@ def _user_stats_period_text(uid: int, mode: str) -> str:
         key_view = key or ""
     return (
         f"📊 <b>Твоя статистика ({nice})</b>\n"
-        f"<i>{html_escape(key_view)}</i>\n\n"
-        f"🎬 Видео скачано: <b>{v_ops}</b> операций (файлов: <b>{v_sent}</b>)\n"
-        f"🖼️ Фото скачано: <b>{p_ops}</b> операций (фото: <b>{p_sent}</b>)\n"
-        f"🎵 Музыка скачано: <b>{a_sent}</b>\n"
-        f"⭐ Stars пожертвовано: <b>{stars}</b>\n"
+        f"<i>{html_escape(key_view)}</i>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🎬 Видео скачано: <b>{v_ops}</b>\n"
+        f"└  По платформам:\n{_fmt_platform_breakdown(by_source)}\n\n"
+        "🗃️ <b>Другие скачивания:</b>\n"
+        f"├ 🖼️ Фото скачано: <b>{p_sent}</b>\n"
+        f"├ 🎵 Аудио скачано: <b>{a_sent}</b>\n"
+        f"└ 📝 Описаний скачано: <b>{d_sent}</b>\n\n"
+        f"⭐ Stars пожертвовано: <b>{int(rec.get('stars', 0))}</b>\n"
+        f"🪙 Рублей пожертвовано: <b>{int(rec.get('money', 0))}₽</b>"
     )
 
 def _admin_banlist_text() -> str:
@@ -560,6 +640,39 @@ def _admin_banlist_text() -> str:
             f"  Причина: <i>{html_escape(reason)}</i>\n\n"
         )
     return "".join(lines)
+
+
+def _admin_errors_text() -> str:
+    """💥 Ошибки: подробная разбивка по категориям (стадия/тип) — всё время."""
+    all_stats = store.data.get("stats", {}).get("all", {}) or {}
+    errs = all_stats.get("errors", {}) or {}
+    total = int(errs.get("total", 0))
+    by_stage = sorted((errs.get("by_stage", {}) or {}).items(), key=lambda kv: int(kv[1]), reverse=True)
+    by_type = sorted((errs.get("by_type", {}) or {}).items(), key=lambda kv: int(kv[1]), reverse=True)
+
+    lines = [
+        "💥 <b>Ошибки · всё время</b>",
+        "━━━━━━━━━━━━━━━━━━━━\n",
+        f"Всего: <b>{total}</b>\n",
+    ]
+    lines.append("📍 <b>По стадиям (где произошла):</b>")
+    if by_stage:
+        for i, (k, v) in enumerate(by_stage):
+            prefix = "└" if i == len(by_stage) - 1 else "├"
+            pct = f"{int(v) * 100 / total:.1f}%" if total else "0%"
+            lines.append(f"{prefix} {html_escape(str(k))}: <b>{int(v)}</b> ({pct})")
+    else:
+        lines.append("└ нет данных")
+    lines.append("")
+    lines.append("🧩 <b>По типу исключения:</b>")
+    if by_type:
+        for i, (k, v) in enumerate(by_type):
+            prefix = "└" if i == len(by_type) - 1 else "├"
+            pct = f"{int(v) * 100 / total:.1f}%" if total else "0%"
+            lines.append(f"{prefix} <code>{html_escape(str(k))}</code>: <b>{int(v)}</b> ({pct})")
+    else:
+        lines.append("└ нет данных")
+    return "\n".join(lines)
 
 
 # ================== SEND WRAPPERS ==================

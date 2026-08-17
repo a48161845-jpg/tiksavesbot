@@ -28,6 +28,7 @@ class Limiters:
 
         self.dl: Dict[int, deque] = defaultdict(deque)
         self.photo: Dict[int, deque] = defaultdict(deque)
+        self._user_dl_locks: Dict[int, asyncio.Lock] = {}
 
     def _cleanup(self, dq: deque, now: float, window: int) -> None:
         while dq and now - dq[0] > window:
@@ -84,6 +85,18 @@ class Limiters:
             return False, wait
         dq.append(now)
         return True, 0
+
+    def user_dl_lock(self, uid: int) -> asyncio.Lock:
+        """
+        Личная очередь на скачивание: даже если лимит (6 запросов / 60 сек)
+        позволяет прислать несколько ссылок подряд, сами скачивания одного
+        пользователя выполняются строго по одному, а не параллельно.
+        """
+        lock = self._user_dl_locks.get(uid)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._user_dl_locks[uid] = lock
+        return lock
 
     def photo_hit(self, uid: int, count: int) -> Tuple[bool, int]:
         now = time.time()

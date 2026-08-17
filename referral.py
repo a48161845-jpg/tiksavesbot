@@ -7,14 +7,25 @@
 бот только ведёт учёт баллов, рефералов и заявок.
 """
 import contextlib
+import time
 from typing import Dict, List, Optional
 
-from config import BOT_USERNAME, GIFTS, GIFTS_BY_KEY, REF_POINTS_PER_REFERRAL, REF_TOP_LIMIT
-from helpers import html_escape
+from config import (
+    BOT_USERNAME,
+    GIFTS,
+    GIFTS_BY_KEY,
+    REF_POINTS_PER_REFERRAL,
+    REF_TOP_LIMIT,
+    REFERRAL_LOG_CHANNEL_ID,
+)
+from helpers import html_escape, now_msk_str
 from storage import store
 
-# uid -> gift_key: ждём подтверждения покупки этого подарка
-pending_gift_purchase: Dict[int, str] = {}
+# uid -> {"key": gift_key, "type": "stars"/"tickets", "to": recipient_id, "comment": str, "stage": str}
+# Также используется как временное хранилище данных о покупке подарка за
+# звёзды, пока пользователь не оплатит настоящий инвойс Telegram Stars —
+# см. send_gift_stars_invoice / finalize_gift_stars_purchase ниже.
+pending_gift_purchase: Dict[int, dict] = {}
 PENDING_GIFT_TTL_SEC = 300
 
 DIVIDER = "━━━━━━━━━━━━━━━━━━━━"
@@ -31,14 +42,17 @@ def gift_by_key(key: str) -> Optional[dict]:
 def ref_menu_text(uid: int) -> str:
     rs = store.get_ref_stats(uid)
     return (
-        "🎁 <b>Реферальная система TikSaves</b>\n"
+        "👥 <b>Реферальная система TikSaves</b>\n"
         f"{DIVIDER}\n\n"
-        f"👥 Приглашено друзей: <b>{rs['referrals_count']}</b>\n"
-        f"🎟 Баланс: <b>{rs['ref_points']}</b> баллов\n\n"
-        "Зови друзей и копи баллы на подарки — просто скидывай свою ссылку 👇\n\n"
-        f"💎 За каждого активного друга: <b>+{REF_POINTS_PER_REFERRAL} 🎟</b>\n"
-        "<i>(баллы начисляются, как только друг скачает своё первое видео)</i>\n\n"
-        "🔗 <b>Твоя ссылка:</b>\n"
+        f"🎯 <b>Твой прогресс</b>\n"
+        f"├ 👥 Приглашено друзей: <b>{rs['referrals_count']}</b>\n"
+        f"└ 🎟 Баланс билетиков: <b>{rs['ref_points']}</b>\n\n"
+        f"💡 <b>Как это работает?</b>\n"
+        f"├ 1️⃣ Поделись своей ссылкой\n"
+        f"├ 2️⃣ Друг установит бота и скачает видео\n"
+        f"├ 3️⃣ Ты получишь <b>+{REF_POINTS_PER_REFERRAL} 🎟</b>\n"
+        f"└ 4️⃣ Меняй баллы на подарки в магазине 🎁\n\n"
+        f"🔗 <b>Твоя реф.ссылка (копируй и отправляй):</b>\n"
         f"<code>t.me/{BOT_USERNAME}?start={uid}</code>"
     )
 
@@ -58,37 +72,41 @@ def _gifts_grouped_by_price() -> List[tuple]:
 def gift_shop_text(uid: int) -> str:
     rs = store.get_ref_stats(uid)
     lines = [
-        "🎁 <b>Магазин подарков</b>",
+        "🎁 <b>Магазин подарков</b>\n"
         f"{DIVIDER}\n",
-        f"🎟 Твой баланс: <b>{rs['ref_points']}</b>\n",
-        "Выбирай подарок — жми кнопку ниже 👇\n",
+        f"🎟 <b>Твой баланс:</b> <b>{rs['ref_points']}</b> билетиков\n",
+        "Выбери подарок из списка ниже 👇\n",
+        f"<b>💝 Цена каждого подарка:</b> <b>55⭐</b> или <b>500🎟</b>\n",
     ]
-    for price, gifts in _gifts_grouped_by_price():
-        names = "  •  ".join(f"{g['emoji']} {html_escape(g['name'])}" for g in gifts)
-        lines.append(f"<b>{price} 🎟</b>\n{names}\n")
+    lines.append(f"{DIVIDER}\n")
+    names = "  •  ".join(f"{g['emoji']} {html_escape(g['name'])}" for g in GIFTS)
+    lines.append(f"<b>Доступные подарки:</b>\n{names}")
     return "\n".join(lines)
 
 
 def gift_confirm_text(gift: dict) -> str:
     return (
-        "🧾 <b>Подтверждение покупки</b>\n"
+        "✨ <b>Подтверждение покупки подарка</b>\n"
         f"{DIVIDER}\n\n"
-        f"🎁 Подарок: {gift['emoji']} <b>{html_escape(gift['name'])}</b>\n"
-        f"🎟 Стоимость: <b>{gift['price']}</b> баллов\n\n"
-        "После подтверждения баллы спишутся, а заявку обработает администрация вручную.\n\n"
-        "Продолжаем? 👇"
+        f"🎁 Выбранный подарок:\n"
+        f"   {gift['emoji']} <b>{html_escape(gift['name'])}</b>\n\n"
+        f"💎 Стоимость: <b>{gift['price']} ⭐</b>\n"
+        f"   или <b>{gift['price'] * 10}🎟</b> (билетиков)\n\n"
+        "❗ <i>После подтверждения баллы/билетики спишутся!</i>\n"
+        "Администрация обработает заявку вручную.\n\n"
+        "✅ Готов(а) к покупке?"
     )
 
 
 def gift_created_text(gift: dict) -> str:
     return (
-        "✅ <b>Заявка создана!</b>\n"
+        "🎉 <b>Заявка успешно создана!</b>\n"
         f"{DIVIDER}\n\n"
         f"🎁 Подарок: {gift['emoji']} <b>{html_escape(gift['name'])}</b>\n"
-        f"🎟 Списано: <b>{gift['price']}</b> баллов\n"
-        "📌 Статус: <b>⏳ ожидает выдачи</b>\n\n"
-        "Администратор скоро обработает заявку.\n"
-        "Спасибо, что помогаешь развивать TikSaves ❤️"
+        f"💳 Списано: <b>{gift['price']}</b> баллов\n"
+        f"📊 Статус: <b>⏳ Ожидает выдачи</b>\n\n"
+        "👑 Администратор скоро обработает твою заявку.\n"
+        "Спасибо за поддержку TikSaves! ❤️"
     )
 
 
@@ -205,6 +223,115 @@ async def _maybe_send_nudge(bot, uid: int) -> None:
     text = random.choice([REMINDER_MSG, DONATE_REMINDER_MSG, REFERRAL_REMINDER_MSG])
     with contextlib.suppress(Exception):
         await bot.send_message(uid, to_html_simple(text), parse_mode="HTML")
+
+
+def _gift_invoice_payload(uid: int) -> str:
+    """Уникальный payload инвойса покупки подарка звёздами — по префиксу
+    'gift_buy_' successful_payment-хендлер отличает его от обычного доната."""
+    return f"gift_buy_{uid}_{int(time.time() * 1000)}"
+
+
+async def send_gift_stars_invoice(bot, uid: int, gift: dict) -> None:
+    """Открывает НАСТОЯЩЕЕ окно оплаты Telegram Stars за подарок (как в
+    /donate) — реальный инвойс на gift['price'] звёзд, а не списание
+    виртуального баланса."""
+    from aiogram.types import LabeledPrice
+
+    await bot.send_invoice(
+        chat_id=uid,
+        title=f"{gift['emoji']} {gift['name']}",
+        description=f"Покупка подарка «{gift['name']}» за {gift['price']} ⭐ в TikSaves",
+        payload=_gift_invoice_payload(uid),
+        provider_token="",
+        currency="XTR",
+        prices=[LabeledPrice(label=gift["name"], amount=int(gift["price"]))],
+    )
+
+
+async def finalize_gift_stars_purchase(message, buyer_uid: int, label: str) -> None:
+    """Вызывается из хендлера successful_payment, когда payload инвойса
+    начинается с 'gift_buy_' (см. _gift_invoice_payload) — то есть только что
+    прошла реальная оплата Stars за подарок. Берёт отложенные данные о
+    подарке/получателе/комментарии из pending_gift_purchase, создаёт заявку
+    админу и сохраняет telegram_payment_charge_id — он нужен, чтобы можно
+    было по-настоящему вернуть звёзды, если админ отклонит заявку.
+    """
+    from keyboards import gift_admin_kb
+
+    from logging_channel import format_user_for_log
+
+    charge_id = message.successful_payment.telegram_payment_charge_id
+    stars = int(message.successful_payment.total_amount)
+    pend = pending_gift_purchase.pop(buyer_uid, None)
+
+    async def _refund() -> None:
+        with contextlib.suppress(Exception):
+            await message.bot.refund_star_payment(user_id=buyer_uid, telegram_payment_charge_id=charge_id)
+
+    if not pend:
+        # Не должны сюда попадать в норме, но звёзды платно списаны —
+        # молча терять оплату нельзя, возвращаем их и сообщаем пользователю.
+        await _refund()
+        await message.answer(
+            "⚠️ Не удалось определить, какой подарок вы покупали (истекло время ожидания).\n"
+            "Звёзды автоматически возвращены. Оформите покупку заново в /ref.",
+            parse_mode="HTML",
+        )
+        return
+
+    gift = gift_by_key(pend.get("key", ""))
+    if not gift:
+        await _refund()
+        await message.answer("⚠️ Этот подарок больше недоступен. Звёзды возвращены.", parse_mode="HTML")
+        return
+
+    recipient_id = int(pend.get("to") or buyer_uid)
+    comment = (pend.get("comment") or "").strip()
+
+    req_id = store.new_gift_request(
+        buyer_uid,
+        gift["key"],
+        gift["name"],
+        stars,
+        payment_type="stars",
+        recipient_id=recipient_id,
+        gift_comment=comment,
+        telegram_payment_charge_id=charge_id,
+    )
+
+    recipient_label = store.get_user_label(recipient_id)
+    if recipient_id == buyer_uid:
+        await message.answer(gift_created_text(gift), parse_mode="HTML")
+    else:
+        await message.answer(
+            "✅ <b>Оплата прошла, заявка создана!</b>\n\n"
+            f"🎁 Подарок: {gift['emoji']} {gift['name']}\n"
+            f"⭐ Оплачено: {stars} звёзд\n"
+            f"👤 Кому: {format_user_for_log(recipient_label, recipient_id)}\n"
+            f"📊 Статус: <b>⏳ Ожидает выдачи</b>\n\n"
+            "👑 Администратор скоро обработает заявку.",
+            parse_mode="HTML",
+        )
+
+    admin_text = (
+        "🎁 <b>Новая заявка на подарок (звёзды"
+        + (", другому)</b>\n\n" if recipient_id != buyer_uid else ")</b>\n\n")
+        + f"👤 От: {format_user_for_log(label, buyer_uid)}\n"
+        + f"👤 Кому: {'Себе' if recipient_id == buyer_uid else format_user_for_log(recipient_label, recipient_id)}\n"
+        + f"🎁 Подарок: {gift['emoji']} {gift['name']}\n"
+        + f"⭐ Оплачено: {stars} звёзд (реальная оплата, автовыдача при одобрении)\n"
+    )
+    if comment:
+        admin_text += f"💬 Комментарий: <i>{html_escape(comment)}</i>\n"
+    admin_text += f"📅 {now_msk_str()}"
+
+    with contextlib.suppress(Exception):
+        await message.bot.send_message(
+            REFERRAL_LOG_CHANNEL_ID,
+            admin_text,
+            parse_mode="HTML",
+            reply_markup=gift_admin_kb(req_id),
+        )
 
 
 async def after_download_hooks(bot, uid: int, label: str) -> None:

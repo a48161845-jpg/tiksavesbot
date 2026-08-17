@@ -102,8 +102,8 @@ EVENT_MAX = 8
 SPAM_COOLDOWN_SEC = 60
 
 # ========= DOWNLOAD LIMIT =========
-DL_WINDOW_SEC = 10
-DL_MAX_ACTIONS = 1
+DL_WINDOW_SEC = 60
+DL_MAX_ACTIONS = 6
 
 # ========= PHOTO VOLUME LIMIT =========
 PHOTO_WINDOW_SEC = 60
@@ -183,21 +183,22 @@ REF_TOP_LIMIT = int(os.getenv("REF_TOP_LIMIT", "10"))
 # Каталог подарков: ключ, эмодзи, название, цена в баллах.
 # Выдаются вручную администрацией — тут только учёт заявок/баланса.
 GIFTS = [
-    {"key": "heart",     "emoji": "❤️", "name": "Сердечко",   "price": 100},
-    {"key": "bear",      "emoji": "🧸", "name": "Мишка",      "price": 100},
-    {"key": "rose",      "emoji": "🌹", "name": "Роза",       "price": 200},
-    {"key": "giftbox",   "emoji": "🎁", "name": "Подарок",    "price": 200},
-    {"key": "champagne", "emoji": "🥂", "name": "Шампанское", "price": 500},
-    {"key": "cake",      "emoji": "🍰", "name": "Тортик",     "price": 500},
-    {"key": "rocket",    "emoji": "🚀", "name": "Ракета",     "price": 500},
-    {"key": "diamond",   "emoji": "💎", "name": "Алмаз",      "price": 1000},
-    {"key": "ring",      "emoji": "💍", "name": "Кольцо",     "price": 1000},
-    {"key": "trophy",    "emoji": "🏆", "name": "Кубок",      "price": 1000},
+    {"key": "bear_santa",      "emoji": "🎅", "name": "Мишка-Санта",         "price": 55, "tg_id": "5956217000635139069"},
+    {"key": "tree",            "emoji": "🎄", "name": "Новогодняя ёлка",      "price": 55, "tg_id": "5922558454332916696"},
+    {"key": "bear_heart",      "emoji": "💕", "name": "Мишка с сердечком",    "price": 55, "tg_id": "5800655655995968830"},
+    {"key": "heart_love",      "emoji": "💌", "name": "Сердце I LOVE U",      "price": 55, "tg_id": "5801108895304779062"},
+    {"key": "bear_flowers",    "emoji": "🌹", "name": "Мишка с цветами",      "price": 55, "tg_id": "5866352046986232958"},
+    {"key": "bear_leprechaun", "emoji": "🍀", "name": "Мишка-Лепрекон",       "price": 55, "tg_id": "5893356958802511476"},
+    {"key": "bear_clown",      "emoji": "🤡", "name": "Мишка-Клоун",          "price": 55, "tg_id": "5935895822435615975"},
+    {"key": "bear_rabbit",     "emoji": "🐰", "name": "Мишка-Заяц",           "price": 55, "tg_id": "5969796561943660080"},
+    {"key": "bear_hammer",     "emoji": "🔨", "name": "Мишка с молотком",     "price": 55, "tg_id": "5974210632977745012"},
+    {"key": "bear_ball",       "emoji": "⚽", "name": "Мишка с мячом",        "price": 55, "tg_id": "6026193266406327981"},
+    {"key": "bear_gun",        "emoji": "🔫", "name": "Мишка с пистолетиком", "price": 55, "tg_id": "6046178578163303744"},
 ]
 GIFTS_BY_KEY = {g["key"]: g for g in GIFTS}
 
-# Отдельный канал для заявок на подарки / выдачи призов реферальной системы
-# (не мешаем с общим лог-каналом бота).
+# Канал для заявок на подарки / выдачи призов реферальной системы
+# Сюда идят все запросы на покупку подарков (звёзды/билеты) на одобрение админу
 REFERRAL_LOG_CHANNEL_ID = int(os.getenv("REFERRAL_LOG_CHANNEL_ID", "-1004333103786"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")

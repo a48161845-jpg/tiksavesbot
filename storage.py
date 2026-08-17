@@ -240,6 +240,13 @@ class Storage:
         """Актуальный список всех зарегистрированных uid (см. get_users_count)."""
         return sorted(self._users_set)
 
+    def user_exists(self, uid: int) -> bool:
+        """Писал ли пользователь боту хотя бы раз (/start и т.п.). В отличие
+        от get_user_label (которая всегда возвращает непустую строку — с
+        фолбэком на str(uid) для неизвестных uid), это настоящая проверка
+        регистрации — используется, например, при вводе получателя подарка."""
+        return int(uid) in self._users_set
+
     # ---------- users ----------
     def set_user_label(self, uid: int, label: str) -> None:
         self.data.setdefault("users_map", {})
@@ -327,6 +334,8 @@ class Storage:
         else:
             rec["photo_ops"] = int(rec.get("photo_ops", 0)) + 1
             rec["photos_sent"] = int(rec.get("photos_sent", 0)) + items
+        rec_by_source = rec.setdefault("by_source", {})
+        rec_by_source[source] = int(rec_by_source.get(source, 0)) + 1
 
         for mode, key in keys.items():
             bucket = self._user_period_rec(uid, mode, key)
@@ -336,8 +345,37 @@ class Storage:
             else:
                 bucket["photo_ops"] = int(bucket.get("photo_ops", 0)) + 1
                 bucket["photos_sent"] = int(bucket.get("photos_sent", 0)) + items
+            bucket_by_source = bucket.setdefault("by_source", {})
+            bucket_by_source[source] = int(bucket_by_source.get(source, 0)) + 1
 
         self._touch_seen(uid)
+        self._mark_dirty()
+
+    def inc_description(self, uid: int, items: int = 1) -> None:
+        """Учёт скачанных описаний (кнопка «📝 Описание»)."""
+        from helpers import msk_now, period_keys
+        now_dt = msk_now()
+        keys = period_keys(now_dt)
+        items = int(max(0, items))
+        if items <= 0:
+            return
+
+        def apply_bucket(b: Dict[str, Any]) -> None:
+            d = b.setdefault("downloads", {})
+            d["desc_sent"] = int(d.get("desc_sent", 0)) + items
+
+        for mode, key in keys.items():
+            apply_bucket(self._ensure_bucket(mode, key))
+        apply_bucket(self.data["stats"]["all"])
+
+        us = self.data.setdefault("user_stats", {}).setdefault("downloads", {})
+        rec = us.setdefault(str(uid), {"video_ops": 0, "photo_ops": 0, "video_sent": 0, "photos_sent": 0, "audio_sent": 0})
+        rec["desc_sent"] = int(rec.get("desc_sent", 0)) + items
+
+        for mode, key in keys.items():
+            bucket = self._user_period_rec(uid, mode, key)
+            bucket["desc_sent"] = int(bucket.get("desc_sent", 0)) + items
+
         self._mark_dirty()
 
     def inc_error(self, stage: str, err: Exception) -> None:
@@ -371,11 +409,19 @@ class Storage:
         apply_bucket(self.data["stats"]["all"])
         self._mark_dirty()
 
-    def add_stars(self, uid: int, stars: int) -> None:
+    # 1 звезда = 1 билетик реферальной системы (начисляется автоматически за донат)
+    TICKETS_PER_STAR = 1
+    # 1 билетик за каждые 10₽ доната в рублях (крипто/DonationAlerts, вносится вручную админом)
+    TICKETS_PER_10_RUB = 1
+
+    def add_stars(self, uid: int, stars: int, award_tickets: bool = True) -> int:
+        """Начисляет донат звёздами. При award_tickets=True (по умолчанию — обычная
+        оплата Stars в боте) автоматически начисляет билетики 1⭐=1🎟.
+        Возвращает начисленные билетики (0, если award_tickets=False)."""
         from helpers import msk_now, period_keys
         stars = int(max(0, stars))
         if stars <= 0:
-            return
+            return 0
         now_dt = msk_now()
         keys = period_keys(now_dt)
 
@@ -394,6 +440,127 @@ class Storage:
             bucket["stars"] = int(bucket.get("stars", 0)) + stars
 
         self._mark_dirty()
+
+        tickets = 0
+        if award_tickets:
+            tickets = stars * self.TICKETS_PER_STAR
+            self.add_ref_points_delta(uid, tickets)
+        return tickets
+
+    def add_money(self, uid: int, rub: int, award_tickets: bool = True) -> int:
+        """Начисляет донат в рублях (крипто/DonationAlerts). При award_tickets=True
+        автоматически начисляет билетики: 1🎟 за каждые 10₽.
+        Возвращает начисленные билетики (0, если award_tickets=False)."""
+        from helpers import msk_now, period_keys
+        rub = int(max(0, rub))
+        if rub <= 0:
+            return 0
+        now_dt = msk_now()
+        keys = period_keys(now_dt)
+
+        def apply_bucket(b: Dict[str, Any]) -> None:
+            b["money_total"] = int(b.get("money_total", 0)) + rub
+
+        for mode, key in keys.items():
+            apply_bucket(self._ensure_bucket(mode, key))
+        apply_bucket(self.data["stats"]["all"])
+
+        us = self.data.setdefault("user_stats", {}).setdefault("money", {})
+        us[str(uid)] = int(us.get(str(uid), 0)) + rub
+
+        for mode, key in keys.items():
+            bucket = self._user_period_rec(uid, mode, key)
+            bucket["money"] = int(bucket.get("money", 0)) + rub
+
+        self._mark_dirty()
+
+        tickets = 0
+        if award_tickets:
+            tickets = (rub // 10) * self.TICKETS_PER_10_RUB
+            if tickets:
+                self.add_ref_points_delta(uid, tickets)
+        return tickets
+
+    def get_user_stars(self, uid: int) -> int:
+        return int(self.data.get("user_stats", {}).get("stars", {}).get(str(uid), 0))
+
+    def get_user_money(self, uid: int) -> int:
+        return int(self.data.get("user_stats", {}).get("money", {}).get(str(uid), 0))
+
+    def set_user_stars(self, uid: int, value: int) -> Dict[str, int]:
+        """Ручная (админская) правка суммы доната звёздами: УСТАНАВЛИВАЕТ
+        абсолютное значение (не добавляет). Разница (дельта) применяется к
+        общей статистике /stats. Если значение выросло — доначисляются
+        билетики за разницу (1⭐=1🎟); при уменьшении билетики не отбираются."""
+        value = int(max(0, value))
+        old = self.get_user_stars(uid)
+        delta = value - old
+        if delta == 0:
+            return {"stars": value, "tickets_awarded": 0}
+
+        from helpers import msk_now, period_keys
+        now_dt = msk_now()
+        keys = period_keys(now_dt)
+
+        def apply_bucket(b: Dict[str, Any]) -> None:
+            b["stars_total"] = max(0, int(b.get("stars_total", 0)) + delta)
+
+        for mode, key in keys.items():
+            apply_bucket(self._ensure_bucket(mode, key))
+        apply_bucket(self.data["stats"]["all"])
+
+        us = self.data.setdefault("user_stats", {}).setdefault("stars", {})
+        us[str(uid)] = value
+
+        for mode, key in keys.items():
+            bucket = self._user_period_rec(uid, mode, key)
+            bucket["stars"] = max(0, int(bucket.get("stars", 0)) + delta)
+
+        self._mark_dirty()
+
+        tickets_awarded = 0
+        if delta > 0:
+            tickets_awarded = delta * self.TICKETS_PER_STAR
+            self.add_ref_points_delta(uid, tickets_awarded)
+        return {"stars": value, "tickets_awarded": tickets_awarded}
+
+    def set_user_money(self, uid: int, value: int) -> Dict[str, int]:
+        """Ручная (админская) правка суммы доната в рублях: УСТАНАВЛИВАЕТ
+        абсолютное значение (не добавляет). Разница (дельта) применяется к
+        общей статистике /stats. Если значение выросло — доначисляются
+        билетики за разницу (1🎟 за 10₽); при уменьшении билетики не отбираются."""
+        value = int(max(0, value))
+        old = self.get_user_money(uid)
+        delta = value - old
+        if delta == 0:
+            return {"money": value, "tickets_awarded": 0}
+
+        from helpers import msk_now, period_keys
+        now_dt = msk_now()
+        keys = period_keys(now_dt)
+
+        def apply_bucket(b: Dict[str, Any]) -> None:
+            b["money_total"] = max(0, int(b.get("money_total", 0)) + delta)
+
+        for mode, key in keys.items():
+            apply_bucket(self._ensure_bucket(mode, key))
+        apply_bucket(self.data["stats"]["all"])
+
+        us = self.data.setdefault("user_stats", {}).setdefault("money", {})
+        us[str(uid)] = value
+
+        for mode, key in keys.items():
+            bucket = self._user_period_rec(uid, mode, key)
+            bucket["money"] = max(0, int(bucket.get("money", 0)) + delta)
+
+        self._mark_dirty()
+
+        tickets_awarded = 0
+        if delta > 0:
+            tickets_awarded = (delta // 10) * self.TICKETS_PER_10_RUB
+            if tickets_awarded:
+                self.add_ref_points_delta(uid, tickets_awarded)
+        return {"money": value, "tickets_awarded": tickets_awarded}
 
     def inc_audio(self, uid: int, items: int = 1) -> None:
         from helpers import msk_now, period_keys
@@ -629,16 +796,47 @@ class Storage:
         return None
 
     # ---------- gift requests (магазин подарков) ----------
-    def new_gift_request(self, uid: int, gift_key: str, gift_name: str, gift_price: int) -> int:
+    def new_gift_request(
+        self,
+        uid: int,
+        gift_key: str,
+        gift_name: str,
+        gift_price: int,
+        payment_type: str = "tickets",
+        recipient_id: int = None,
+        gift_comment: str = "",
+        telegram_payment_charge_id: str = "",
+    ) -> int:
+        """Создаёт новую заявку на подарок.
+        
+        Args:
+            uid: ID покупателя
+            gift_key: ключ подарка
+            gift_name: название подарка
+            gift_price: цена в звёздах или билетиках
+            payment_type: "stars" (реальная оплата Telegram Stars) или "tickets"
+                (списание с виртуального баланса реферальной системы)
+            recipient_id: ID получателя (если None, то uid)
+            gift_comment: комментарий от покупателя (при даровании другому)
+            telegram_payment_charge_id: ID платежа Telegram Stars (для payment_type
+                "stars") — нужен, чтобы при отклонении заявки сделать настоящий
+                возврат звёзд через refundStarPayment.
+        """
         gr = self.data.setdefault("gift_requests", {})
         seq = int(self.data.get("gift_requests_seq", 0)) + 1
         self.data["gift_requests_seq"] = seq
         now_ts = int(time.time())
+        if recipient_id is None:
+            recipient_id = uid
         gr[str(seq)] = {
             "user_id": int(uid),
+            "recipient_id": int(recipient_id),
             "gift_key": gift_key,
             "gift_name": gift_name,
             "gift_price": int(gift_price),
+            "payment_type": payment_type,  # "stars" или "tickets"
+            "gift_comment": gift_comment,
+            "telegram_payment_charge_id": telegram_payment_charge_id,
             "status": "pending",
             "created_at": now_ts,
             "updated_at": now_ts,

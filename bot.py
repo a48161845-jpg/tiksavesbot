@@ -19,7 +19,7 @@ import globals_state
 from globals_state import dp
 from providers import TikWMClient, ApifyProvider, BaseProvider, ProviderSwitcher
 from logging_channel import autosave_loop, start_log_worker, stop_log_worker, send_channel_log
-from db_report import start_monthly_report, start_pinned_overview
+from db_report import send_db_json
 
 # Импорт регистрирует все хендлеры (@dp.message/@dp.callback_query) на dp.
 import handlers  # noqa: F401
@@ -59,8 +59,6 @@ async def main():
         await start_log_worker(bot)
 
         _autosave_task = asyncio.create_task(autosave_loop())
-        _monthly_task = start_monthly_report(bot)
-        _pinned_overview_task = start_pinned_overview(bot)
 
         start_ts = time.time()
         shutdown_reason = "⏹️ Штатная остановка"

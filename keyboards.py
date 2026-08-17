@@ -24,6 +24,10 @@ def stats_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📊 Всё время", callback_data="ad:stats:all"),
             ],
             [
+                InlineKeyboardButton(text="🏆 Топ", callback_data="ad:top"),
+                InlineKeyboardButton(text="💥 Ошибки", callback_data="ad:errors"),
+            ],
+            [
                 InlineKeyboardButton(text="⬅️ Назад", callback_data="ad:back"),
                 InlineKeyboardButton(text="❌ Закрыть", callback_data="ad:close"),
             ],
@@ -120,16 +124,12 @@ HELP_TEXT = (
     "🧾 <b>Помощь по TikSaves</b>\n"
     "━━━━━━━━━━━━━━━━━━━━\n\n"
     "📎 Просто пришли ссылку на TikTok, YouTube, Instagram, VK или Pinterest — бот сам предложит варианты.\n\n"
-    "🧭 <b>Что умеют кнопки:</b>\n"
-    "🎬 Скачать видео — без водяных знаков, если доступно\n"
-    "🖼️ Скачать фото — выбери нужные или забери слайдшоу целиком\n"
-    "🎵 Скачать музыку — сохрани звук отдельно\n"
-    "💛 Донат — поддержать проект\n"
-    "🆘 Поддержка — связь с админом\n\n"
-    "🎁 <b>Совет:</b> приглашай друзей и получай баллы на подарки — /ref\n\n"
-    "⚠️ <b>Лимиты:</b>\n"
-    "• частые запросы ограничены небольшим кулдауном\n"
-    "• много фото за раз — ограничение по объёму"
+    "🧭 <b>Кнопки помощи:</b>\n"
+    "🎬 Скачать видео — помощь по скачиванию видео\n"
+    "🖼️ Скачать фото — помощь по скачиванию фото\n"
+    "⚠️ Лимиты — помощь по лимитам\n"
+    "📳 Inline-режим — помощь по скачиванию видео в Inline-режиме\n"
+    "👥 Реферальная система — помощь по реферальной системе"
 )
 
 def help_kb() -> InlineKeyboardMarkup:
@@ -140,14 +140,11 @@ def help_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🖼️ Скачать фото", callback_data="help:photo"),
             ],
             [
-                InlineKeyboardButton(text="🎵 Скачать музыку", callback_data="help:music"),
-            ],
-            [
                 InlineKeyboardButton(text="⚠️ Лимиты", callback_data="help:limits"),
             ],
             [
-                InlineKeyboardButton(text="💛 Донат", callback_data="help:donate"),
-                InlineKeyboardButton(text="🆘 Поддержка", callback_data="help:support"),
+                InlineKeyboardButton(text="📳 Inline-режим", callback_data="help:inline"),
+                InlineKeyboardButton(text="👥 Реферальная система", callback_data="help:referral"),
             ],
             [
                 InlineKeyboardButton(text="❌ Закрыть", callback_data="help:close"),
@@ -167,23 +164,27 @@ def help_section_kb() -> InlineKeyboardMarkup:
 
 HELP_SECTIONS = {
     "video": (
-        "🎬 <b>Скачать видео</b>\n"
+        "🎬 <b>Помощь по скачиванию видео</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "1️⃣ Пришли ссылку на TikTok, YouTube, Instagram, VK или Pinterest\n"
-        "2️⃣ Выбери «Скачать видео»\n"
-        "3️⃣ Получи файл без водяных знаков 🎉"
+        "1️⃣ Пришли ссылку на TikTok, YouTube, Instagram, VK или Pinterest 📱\n\n"
+        "2️⃣ Подожди несколько секунд пока скачивается видео ⏳\n\n"
+        "3️⃣ Получай готовое видео в хорошем качестве без водяных знаков 🎉\n\n"
+        f"⛔ При ошибке повтори попытку, при повторной ошибке напиши в /support"
     ),
     "photo": (
-        "🖼️ <b>Скачать фото</b>\n"
+        "🖼️ <b>Помощь по скачиванию фото</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "1️⃣ Пришли ссылку на TikTok-слайдшоу\n"
-        "2️⃣ Выбери нужные фото по номерам — или сразу всё\n"
-        "3️⃣ Получи готовый альбом 📸"
-    ),
-    "music": (
-        "🎵 <b>Скачать музыку</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "После обработки ссылки нажми «🎵 Музыка» — пришлю трек отдельным файлом."
+        "1️⃣ Пришли ссылку на TikTok-слайдшоу 📱\n\n"
+        "2️⃣ Выбери скачать как фото или как видео\n\n"
+        "3️⃣ При выборе «как фото» откроется меню с выбором страниц и возможностью скачать 🎵 Музыку / 📝 Описание\n\n"
+        "4️⃣ При скачивании видео придёт файл с кнопками 🎵 Музыка / 📝 Описание\n\n"
+        "🖼️ <b>Меню скачивания фото:</b>\n\n"
+        "5️⃣ Цифры сверху — нажимая на цифру, ты выбираешь конкретное фото для скачивания. Можно выбрать 1, 2, 3 или все 10\n\n"
+        "6️⃣ «Выбрать страницу» — выбираешь сразу все 10 фото на странице, если не хочешь выбирать вручную (есть кнопки переключения страниц)\n\n"
+        "7️⃣ «Скачать всё» — скачиваются все фото, а также музыка и описание\n\n"
+        "8️⃣ «🎵 Музыка» — выбирает музыку (нажимай, если не выбрал «Скачать всё»). «📝 Описание» — выбирает описание (нажимай, если не выбрал «Скачать всё»)\n\n"
+        "9️⃣ «Очистить» — сбрасывает все выборы, «Продолжить» — скачивает всё, что выбрано\n\n"
+        f"⛔ При ошибке повтори попытку, при повторной ошибке напиши в /support"
     ),
     "limits": (
         "⚠️ <b>Лимиты</b>\n"
@@ -194,17 +195,26 @@ HELP_SECTIONS = {
         "это ограничение платформы, не бота. Слишком тяжёлые видео (обычно очень длинные ролики "
         "с YouTube/VK) скачать не получится."
     ),
-    "donate": (
-        "💛 <b>Донат</b>\n"
+    "inline": (
+        "📳 <b>Помощь по Inline-режиму</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Поддержать проект можно через Telegram Stars или крипту.\n"
-        "Каждый донат идёт на хостинг и развитие бота — спасибо! 🙌"
+        "Скачивай видео не только в боте 🎉\n\n"
+        "1️⃣ Введи в любом чате <code>@tiksavesbot</code>, подожди немного пока появится результат, "
+        "затем вставь ссылку на TikTok-слайдшоу или пришли ссылку на TikTok-видео, YouTube, Instagram, VK или Pinterest\n\n"
+        "2️⃣ Подожди немного, пока загрузится видео или TikTok-слайдшоу\n\n"
+        "3️⃣ Получай готовое видео в хорошем качестве без водяных знаков 🎉\n\n"
+        f"⛔ При ошибке повтори попытку, при повторной ошибке напиши в /support"
     ),
-    "support": (
-        "🆘 <b>Поддержка</b>\n"
+    "referral": (
+        "👥 <b>Помощь по реферальной системе</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"Пиши сюда: {html_escape(SUPPORT_USERNAME)}\n"
-        "Приложи ссылку и опиши, что не работает — так быстрее разберёмся."
+        "1️⃣ Забери свою ссылку в /ref\n\n"
+        "2️⃣ Отправь её друзьям\n\n"
+        "3️⃣ Как только друг скачает первое видео — тебе: 💎 +10 🎟\n\n"
+        "4️⃣ Копи баллы и меняй их на подарки в магазине 🎁\n\n"
+        "✋ Подарки выдаются вручную администрацией — обычно быстро.\n\n"
+        "⛔ Перед выводом каждый реферал будет проверяться вручную, за накрутки будет отказано в выводе, "
+        "а рефералы обнулены."
     ),
 }
 
@@ -252,7 +262,6 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="📊 Статистика", callback_data="ad:stats"),
-                InlineKeyboardButton(text="🏆 Топ", callback_data="ad:top"),
             ],
             [
                 InlineKeyboardButton(text="🚫 Бан-лист", callback_data="ad:banlist"),
@@ -288,8 +297,7 @@ def admin_back_kb() -> InlineKeyboardMarkup:
 ADMIN_MENU_TEXT = (
     "🛠 <b>Админ-панель TikSaves</b>\n"
     "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "📊 <b>Статистика</b> — по периодам\n"
-    "🏆 <b>Топ</b> — лидеры + топ рефереров\n"
+    "📊 <b>Статистика</b> — по периодам (внутри — 🏆 Топ и 💥 Ошибки)\n"
     "🚫 <b>Бан-лист</b> — активные баны\n"
     "🗄 <b>Дамп БД</b> — скачать базу данных\n"
     "👑 <b>Администраторы</b> — список и управление\n"
@@ -328,8 +336,7 @@ ADMIN_HELP_TEXT = (
     "🚫 <b>Баны</b>\n"
     f"├ {code('/ban ID 2h причина')} — забанить\n"
     f"├ {code('/unban ID')} — разбанить\n"
-    f"├ {code('/banlist')} — список банов\n"
-    f"└ {code('/baninfo ID')} — информация о бане\n\n"
+    f"└ {code('/banlist')} — список банов\n\n"
 
     "👑 <b>Администраторы</b>\n"
     f"├ {code('/adminlist')} — список всех админов\n"
@@ -339,9 +346,12 @@ ADMIN_HELP_TEXT = (
     "👤 <b>Пользователь</b>\n"
     f"└ {code('/info ID')} — информация о пользователе (включая рефералов)\n\n"
 
+    "💛 <b>Донаты (ручная правка)</b>\n"
+    f"├ {code('/stars ID 250')} — установить сумму доната звёздами\n"
+    f"└ {code('/money ID 500')} — установить сумму доната в рублях\n\n"
+
     "🗄 <b>База данных</b>\n"
-    f"├ {code('/dbfile')} — дамп БД файлом\n"
-    f"└ {code('/dblog')} — отчёт в лог-канал\n\n"
+    f"└ {code('/dbfile')} — дамп БД файлом\n\n"
 
     "📣 <b>Рассылка</b>\n"
     f"├ {code('/broadcast текст')} — своя рассылка\n"
@@ -376,7 +386,6 @@ def ref_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🎁 Магазин подарков", callback_data="ref:shop")],
             [InlineKeyboardButton(text="📦 Мои заявки", callback_data="ref:myrequests")],
             [InlineKeyboardButton(text="🏆 Топ рефереров", callback_data="ref:top")],
-            [InlineKeyboardButton(text="📖 Как это работает", callback_data="ref:howitworks")],
         ]
     )
 
@@ -386,17 +395,20 @@ def ref_back_kb() -> InlineKeyboardMarkup:
 
 
 def gift_shop_kb(balance: int) -> InlineKeyboardMarkup:
+    """Магазин подарков в /ref — каждый подарок 55⭐ (реальная оплата Stars,
+    доступна всегда) или 500🎟 (списание билетиков, нужен баланс)."""
     rows: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
     for g in GIFTS:
-        lock = "" if balance >= g["price"] else "🔒 "
-        row.append(InlineKeyboardButton(text=f"{lock}{g['emoji']} {g['name']}", callback_data=f"gift:buy:{g['key']}"))
+        # За звёзды можно купить всегда (это настоящая оплата Telegram Stars,
+        # а не виртуальный баланс) — поэтому подарки в магазине не блокируем.
+        row.append(InlineKeyboardButton(text=f"{g['emoji']} {g['name']}", callback_data=f"gift:buy:{g['key']}"))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="ref:back")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад в /ref", callback_data="ref:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
