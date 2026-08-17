@@ -191,8 +191,8 @@ GIFTS = [
     {"key": "bear_leprechaun", "emoji": "🍀", "name": "Мишка-Лепрекон",       "price": 55, "tg_id": "5893356958802511476"},
     {"key": "bear_clown",      "emoji": "🤡", "name": "Мишка-Клоун",          "price": 55, "tg_id": "5935895822435615975"},
     {"key": "bear_rabbit",     "emoji": "🐰", "name": "Мишка-Заяц",           "price": 55, "tg_id": "5969796561943660080"},
-    {"key": "bear_hammer",     "emoji": "🔨", "name": "Мишка с молотком",     "price": 55, "tg_id": "5974210632977745012"},
-    {"key": "bear_ball",       "emoji": "⚽", "name": "Мишка с мячом",        "price": 55, "tg_id": "6026193266406327981"},
+    {"key": "bear_hammer",     "emoji": "🔨", "name": "Мишка с молотком",     "price": 55, "tg_id": "6026193266406327981"},
+    {"key": "bear_ball",       "emoji": "⚽", "name": "Мишка с мячом",        "price": 55, "tg_id": "5974210632977745012"},
     {"key": "bear_gun",        "emoji": "🔫", "name": "Мишка с пистолетиком", "price": 55, "tg_id": "6046178578163303744"},
 ]
 GIFTS_BY_KEY = {g["key"]: g for g in GIFTS}
