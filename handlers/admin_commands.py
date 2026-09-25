@@ -189,6 +189,125 @@ async def unban_cmd(message: Message):
         await message.answer(f"ℹ️ Пользователь не в бане: <b>{format_user_for_log(target_label, uid)}</b>", parse_mode="HTML")
 
 
+@dp.message(Command("stars"))
+async def stars_set_cmd(message: Message):
+    """/stars id/username N — устанавливает абсолютную сумму доната звёздами
+    пользователя (не добавляет, а именно задаёт новое значение). Разница
+    учитывается в /stats."""
+    admin_id = message.from_user.id
+    admin_label = await resolve_user_label(message.bot, admin_id)
+    store.set_user_label(admin_id, admin_label)
+
+    if not is_admin(admin_id):
+        return
+    if not await gate_message(message, admin_label):
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) != 3:
+        await message.answer(
+            "Использование:\n"
+            f"{code('/stars id/username кол-во')}\n\n"
+            f"Пример: {code('/stars 123456 250')}\n"
+            f"Пример: {code('/stars @user 0')}\n\n"
+            "⚠️ Значение УСТАНАВЛИВАЕТСЯ, а не добавляется.",
+            parse_mode="HTML",
+        )
+        return
+
+    uid = await resolve_uid_from_arg(message.bot, parts[1])
+    if uid is None:
+        await message.answer("❌ Пользователь не найден. Проверь ID или username.", parse_mode="HTML")
+        return
+
+    try:
+        value = int(parts[2])
+    except ValueError:
+        value = None
+    if value is None or value < 0:
+        await message.answer("❌ Число указано неверно (пример: 250).", parse_mode="HTML")
+        return
+
+    who_label = await resolve_user_label(message.bot, uid)
+    store.set_user_label(uid, who_label)
+    new_value = store.set_user_stars(uid, value)
+
+    import contextlib
+    with contextlib.suppress(Exception):
+        await message.bot.send_message(
+            uid,
+            f"⭐ <b>Администрация начислила вам {value} звезд!</b>",
+            parse_mode="HTML",
+        )
+
+    await message.answer(
+        f"⭐ <b>Донат звёздами обновлён</b>\n\n"
+        f"👤 {format_user_for_log(who_label, uid)}\n"
+        f"Новое значение: <b>{new_value} ⭐</b>",
+        parse_mode="HTML",
+    )
+    log_admin(admin_id, "stars_set", f"target={uid} value={value}")
+
+
+@dp.message(Command("money"))
+async def money_set_cmd(message: Message):
+    """/money id/username N — устанавливает абсолютную сумму доната в рублях
+    (крипто/DonationAlerts, вносится вручную). Разница учитывается в /stats."""
+    admin_id = message.from_user.id
+    admin_label = await resolve_user_label(message.bot, admin_id)
+    store.set_user_label(admin_id, admin_label)
+
+    if not is_admin(admin_id):
+        return
+    if not await gate_message(message, admin_label):
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) != 3:
+        await message.answer(
+            "Использование:\n"
+            f"{code('/money id/username кол-во_в_рублях')}\n\n"
+            f"Пример: {code('/money 123456 500')}\n"
+            f"Пример: {code('/money @user 0')}\n\n"
+            "⚠️ Значение УСТАНАВЛИВАЕТСЯ, а не добавляется.",
+            parse_mode="HTML",
+        )
+        return
+
+    uid = await resolve_uid_from_arg(message.bot, parts[1])
+    if uid is None:
+        await message.answer("❌ Пользователь не найден. Проверь ID или username.", parse_mode="HTML")
+        return
+
+    try:
+        value = int(parts[2])
+    except ValueError:
+        value = None
+    if value is None or value < 0:
+        await message.answer("❌ Число указано неверно (пример: 500).", parse_mode="HTML")
+        return
+
+    who_label = await resolve_user_label(message.bot, uid)
+    store.set_user_label(uid, who_label)
+    new_value = store.set_user_money(uid, value)
+
+    import contextlib
+    with contextlib.suppress(Exception):
+        await message.bot.send_message(
+            uid,
+            f"🪙 <b>Администрация начислила вам {value}₽!</b>",
+            parse_mode="HTML",
+        )
+
+    await message.answer(
+        f"🪙 <b>Донат в рублях обновлён</b>\n\n"
+        f"👤 {format_user_for_log(who_label, uid)}\n"
+        f"Новое значение: <b>{new_value}₽</b>",
+        parse_mode="HTML",
+    )
+    log_admin(admin_id, "money_set", f"target={uid} value={value}")
+
+
 @dp.message(Command("banlist"))
 async def banlist_cmd(message: Message):
     admin_id = message.from_user.id
@@ -261,9 +380,6 @@ async def info_cmd(message: Message):
     d_sent = int(rec.get("desc_sent", 0))
     by_source = rec.get("by_source", {}) or {}
 
-    ref_stats = store.get_ref_stats(uid)
-    invited_cnt = len(store.referrals_of(uid))
-
     ban = store.get_ban(uid)
     if ban:
         until = int(ban.get("until", 0))
@@ -292,9 +408,7 @@ async def info_cmd(message: Message):
         f"├ 🖼️ Фото скачано: <b>{p_sent}</b>\n"
         f"├ 🎵 Аудио скачано: <b>{a_sent}</b>\n"
         f"└ 📝 Описаний скачано: <b>{d_sent}</b>\n\n"
-        f"{_donation_lines(uid)}\n\n"
-        f"🎁 Приглашено рефералов: <b>{invited_cnt}</b> — /ref\n"
-        f"🎟️ Баланс билетиков реферальной системы: <b>{ref_stats['ref_points']}</b>",
+        f"{_donation_lines(uid)}",
         parse_mode="HTML",
     )
 

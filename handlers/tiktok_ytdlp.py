@@ -32,7 +32,7 @@ from youtube_provider import probe_media, download_media
 from send_helpers import send_video_smart
 from picker_state import new_req_id
 from keyboards import under_video_kb
-from referral import after_download_hooks
+from download_nudge import after_download_hooks
 
 
 async def _log_error(

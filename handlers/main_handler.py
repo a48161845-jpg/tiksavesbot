@@ -9,10 +9,12 @@ client и switcher приходят через aiogram workflow_data (см. dp.s
 """
 import time
 import contextlib
+from pathlib import Path
+from typing import Optional
 
 import aiohttp
 from aiogram import F
-from aiogram.types import Message, LinkPreviewOptions
+from aiogram.types import Message, LinkPreviewOptions, FSInputFile
 
 from globals_state import dp
 from config import (
@@ -43,7 +45,80 @@ from send_helpers import send_video_smart
 from picker_state import pending, cleanup_pending, video_extras, new_req_id, cleanup_video_extras, photo_mode_choice_kb
 from keyboards import under_video_kb
 from donate import waiting_stars_amount, send_stars_invoice
-from referral import after_download_hooks
+from download_nudge import after_download_hooks
+from youtube_provider import download_media as ytdlp_download_media
+
+
+async def _tiktok_ytdlp_fallback(message: Message, uid: int, label: str, url: str, status: Message) -> bool:
+    """
+    Запасной путь скачивания TikTok, когда основной провайдер (tikwm.com API)
+    недоступен/вернул пустой ответ (см. лог dlerr "Empty response body from
+    API" — это сбой их API, не бота). Вместо мгновенной ошибки пользователю —
+    пробуем скачать это же видео через yt-dlp напрямую с TikTok. Возвращает
+    True, если получилось скачать и отправить (тогда основной обработчик
+    просто завершает работу), False — если и это не удалось (тогда
+    показываем обычную ошибку, как раньше).
+    """
+    tmp_path: Optional[Path] = None
+    try:
+        with contextlib.suppress(Exception):
+            await status.edit_text("⏳ Основной способ сейчас недоступен, пробую запасной…")
+
+        tmp_path, _info = await ytdlp_download_media(url, Path("."))
+
+        if not tmp_path.exists() or tmp_path.stat().st_size <= 0:
+            raise RuntimeError("yt-dlp: скачанный файл пустой или не найден")
+
+        with contextlib.suppress(Exception):
+            await status.edit_text("📤 Отправляю…")
+
+        req_id = new_req_id()
+        try:
+            await message.answer_video(
+                FSInputFile(tmp_path),
+                caption=CAPTION_VIDEO,
+                parse_mode="HTML",
+                reply_markup=under_video_kb(has_music=False, has_description=False, req_id=req_id),
+            )
+        except Exception:
+            await message.answer_document(
+                FSInputFile(tmp_path),
+                caption=CAPTION_VIDEO,
+                parse_mode="HTML",
+            )
+
+        store.inc_download(uid, "video", items=1, source="tiktok_ytdlp_fallback")
+        await after_download_hooks(message.bot, uid, label)
+        with contextlib.suppress(Exception):
+            await status.delete()
+        await log_event(
+            message.bot,
+            "videodl",
+            [
+                "🎬 Категория: <b>Скачивание TikTok (запасной способ, yt-dlp)</b>",
+                f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
+                f"🔗 Ссылка: {code(url)}",
+            ],
+        )
+        return True
+    except Exception as e:
+        store.inc_error("tiktok_ytdlp_fallback", e)
+        await log_event(
+            message.bot,
+            "dlerr",
+            [
+                "⚠️ Категория: <b>Запасной способ TikTok тоже не сработал</b>",
+                f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
+                f"🧬 Тип: <b>{html_escape(exc_type_name(e))}</b>",
+                f"🔗 Ссылка: {code(url)}",
+                f"🧨 Причина: <b>{html_escape(clamp_reason(e))}</b>",
+            ],
+        )
+        return False
+    finally:
+        if tmp_path:
+            with contextlib.suppress(Exception):
+                tmp_path.unlink(missing_ok=True)
 
 
 @dp.message(F.text)
@@ -104,7 +179,15 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
         async with lim.user_dl_lock(uid), download_sem:
             with contextlib.suppress(Exception):
                 await status.edit_text("⏳ Скачиваю…")
-            media, provider = await switcher.get_media(url or text, raw_url=url)
+            try:
+                media, provider = await switcher.get_media(url or text, raw_url=url)
+            except Exception:
+                # Основной провайдер (tikwm.com) не смог отдать медиа — прежде
+                # чем показывать ошибку, пробуем запасной путь через yt-dlp
+                # напрямую с TikTok (см. _tiktok_ytdlp_fallback выше).
+                if await _tiktok_ytdlp_fallback(message, uid, label, url or text, status):
+                    return
+                raise
 
             video, photos, music = media.video, media.photos, media.music
             description = media.description

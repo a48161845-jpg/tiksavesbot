@@ -21,8 +21,6 @@ from aiogram.types import Message
 from globals_state import dp
 from config import (
     MSG_DL,
-    YOUTUBE_MAX_VIDEO_BYTES,
-    YOUTUBE_MAX_VIDEO_MB,
     YOUTUBE_MAX_DURATION_SEC,
 )
 from helpers import (
@@ -41,8 +39,11 @@ from gates import gate_message
 from limiters import lim, download_sem
 from logging_channel import log_event, format_user_for_log
 from strikes import add_download_strike
-from youtube_provider import probe_media, download_media
-from external_send import send_external_video
+from youtube_provider import probe_media, list_qualities, ffmpeg_available
+from quality_state import save_quality_pending
+from quality_diagnostics import maybe_report_limited_quality
+from picker_state import new_req_id
+from keyboards import quality_choice_kb
 
 PLATFORM_LABELS = {
     "instagram": ("📸", "Instagram"),
@@ -134,47 +135,34 @@ async def other_sources_handler(message: Message):
                     )
                 return
 
+            qualities = list_qualities(info)
             with contextlib.suppress(Exception):
-                await status.edit_text("⬇️ Скачиваю…")
-
-            out_dir = Path(".")
-            try:
-                tmp_path, dl_info = await download_media(url, out_dir)
-            except Exception as e:
-                await _log_err(message.bot, platform, "download", uid, label, url, e)
-                with contextlib.suppress(Exception):
-                    await status.edit_text(
-                        f"❌ Не получилось скачать с {platform_name}.\n"
-                        "Либо пост закрытый, либо там просто нет видео (например, обычная фото-картинка)."
-                    )
-                return
-
-            size = tmp_path.stat().st_size if tmp_path.exists() else 0
-            if size <= 0:
-                with contextlib.suppress(Exception):
-                    await status.edit_text("❌ Скачанный файл пустой. Попробуй ещё раз.")
-                return
-            if size > YOUTUBE_MAX_VIDEO_BYTES:
-                with contextlib.suppress(Exception):
-                    await status.edit_text(f"❌ Файл больше лимита ({YOUTUBE_MAX_VIDEO_MB} МБ).")
-                return
+                await maybe_report_limited_quality(message.bot, platform, url, info, qualities)
+            req_id = new_req_id()
+            save_quality_pending(
+                req_id,
+                uid=uid,
+                url=url,
+                platform=platform,
+                platform_name=platform_name,
+                emoji=emoji,
+                duration=duration,
+                qualities=qualities,
+            )
 
             with contextlib.suppress(Exception):
-                await status.edit_text("📤 Отправляю…")
-
-            try:
-                await send_external_video(message, uid, label, tmp_path, info, dl_info, emoji=emoji, source=platform)
-            except Exception as e:
-                await _log_err(message.bot, platform, "send", uid, label, url, e)
-                with contextlib.suppress(Exception):
-                    await status.edit_text(
-                        "❌ Telegram отклонил файл — скорее всего, он слишком большой "
-                        "для отправки ботом (обычный лимит Telegram — 50 МБ на файл)."
-                    )
-                return
-
-            with contextlib.suppress(Exception):
-                await status.delete()
+                note = (
+                    ""
+                    if ffmpeg_available()
+                    else "\n\n⚠️ На сервере не найден ffmpeg — реально скачается максимум ~720p, "
+                    "даже если выбрать качество выше."
+                )
+                await status.edit_text(
+                    "🎞️ <b>Выбери качество видео</b>\n\nЧем выше качество — тем дольше скачивание и больше файл."
+                    + note,
+                    parse_mode="HTML",
+                    reply_markup=quality_choice_kb(req_id, qualities),
+                )
 
     finally:
         if tmp_path:

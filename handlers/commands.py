@@ -15,7 +15,6 @@ from admin_log_file import log_admin
 from keyboards import (
     START_TEXT,
     HELP_TEXT,
-    SUPPORT_TEXT,
     DONATE_TEXT,
     ADMIN_MENU_TEXT,
     help_kb,
@@ -41,31 +40,14 @@ async def start_cmd(message: Message, command: CommandObject):
 
     is_new = store.register(uid)
     if is_new:
-        # Проверяем реф.ссылку до логирования
-        referral_info = "нет"
-        payload = (command.args or "").strip()
-        if payload.isdigit():
-            referrer_id = int(payload)
-            store.set_referral(uid, referrer_id)
-            referrer_label = store.get_user_label(referrer_id) or str(referrer_id)
-            referral_info = format_user_for_log(referrer_label, referrer_id)
-
         await log_event(
             message.bot,
             "user",
             [
                 "👋 Категория: <b>Приход пользователя</b>",
-                f"🫆 Реферал: {referral_info}",
                 f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
             ],
         )
-    else:
-        # Для существующего пользователя — только обновляем реф.данные если нужно
-        payload = (command.args or "").strip()
-        if payload.isdigit():
-            referrer_id = int(payload)
-            if store.get_referrer(uid) is None:
-                store.set_referral(uid, referrer_id)
 
     if not await gate_message(message, label):
         return
@@ -82,24 +64,6 @@ async def help_cmd(message: Message):
         return
     await message.answer(HELP_TEXT, parse_mode="HTML", reply_markup=help_kb())
     log.info("help: uid=%s", uid)
-
-
-@dp.message(Command("support"))
-async def support_cmd(message: Message):
-    uid = message.from_user.id
-    label = await resolve_user_label(message.bot, uid)
-    store.set_user_label(uid, label)
-    if not await gate_message(message, label):
-        return
-    await message.answer(SUPPORT_TEXT, parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
-    await log_event(
-        message.bot,
-        "support",
-        [
-            "🆘 Категория: <b>Открыта поддержка</b>",
-            f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
-        ],
-    )
 
 
 @dp.message(Command("donate"))

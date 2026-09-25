@@ -26,7 +26,7 @@ from limiters import lim
 from logging_channel import log_event, format_user_for_log
 from strikes import add_download_strike
 from send_helpers import send_photos, send_music_if_any, send_description_if_any
-from referral import after_download_hooks
+from download_nudge import after_download_hooks
 from picker_state import pending, cleanup_pending, picker_kb, video_extras, new_req_id, cleanup_video_extras
 from keyboards import post_download_kb, under_video_kb
 from photo_video import build_photo_slideshow_video

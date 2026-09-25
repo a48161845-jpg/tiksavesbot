@@ -47,7 +47,7 @@ from storage import store
 from user_label import resolve_user_label
 from limiters import lim
 from youtube_provider import probe_media, download_media
-from referral import after_download_hooks
+from download_nudge import after_download_hooks
 
 # Сколько максимум ждём скачивание НОВОЙ (некэшированной) ссылки внутри
 # самого inline-запроса, пока Telegram-клиент ждёт ответа.

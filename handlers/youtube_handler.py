@@ -16,8 +16,6 @@ from aiogram.types import Message
 from globals_state import dp
 from config import (
     MSG_DL,
-    YOUTUBE_MAX_VIDEO_BYTES,
-    YOUTUBE_MAX_VIDEO_MB,
     YOUTUBE_MAX_DURATION_SEC,
 )
 from helpers import html_escape, code, clamp_reason, exc_type_name, is_youtube, extract_youtube_url, normalize_youtube_url
@@ -27,8 +25,11 @@ from gates import gate_message
 from limiters import lim, download_sem
 from logging_channel import log_event, format_user_for_log
 from strikes import add_download_strike
-from youtube_provider import probe_youtube, download_youtube
-from external_send import send_external_video
+from youtube_provider import probe_youtube, list_qualities, ffmpeg_available
+from quality_state import save_quality_pending
+from quality_diagnostics import maybe_report_limited_quality
+from picker_state import new_req_id
+from keyboards import quality_choice_kb
 
 
 async def _log_yt_err(bot, stage: str, uid: int, label: str, url: str, e: Exception) -> None:
@@ -96,44 +97,35 @@ async def youtube_handler(message: Message):
                     )
                 return
 
+            qualities = list_qualities(info)
             with contextlib.suppress(Exception):
-                await status.edit_text("⬇️ Скачиваю видео…")
-
-            out_dir = Path(".")
-            try:
-                tmp_path, dl_info = await download_youtube(url, out_dir)
-            except Exception as e:
-                await _log_yt_err(message.bot, "download", uid, label, url, e)
-                with contextlib.suppress(Exception):
-                    await status.edit_text("❌ Не получилось скачать это видео. Попробуй другую ссылку.")
-                return
-
-            size = tmp_path.stat().st_size if tmp_path.exists() else 0
-            if size <= 0:
-                with contextlib.suppress(Exception):
-                    await status.edit_text("❌ Скачанный файл пустой. Попробуй ещё раз.")
-                return
-            if size > YOUTUBE_MAX_VIDEO_BYTES:
-                with contextlib.suppress(Exception):
-                    await status.edit_text(f"❌ Файл больше лимита ({YOUTUBE_MAX_VIDEO_MB} МБ). Это видео слишком тяжёлое.")
-                return
+                await maybe_report_limited_quality(message.bot, "youtube", url, info, qualities)
+            req_id = new_req_id()
+            save_quality_pending(
+                req_id,
+                uid=uid,
+                url=url,
+                platform="youtube",
+                platform_name="YouTube",
+                emoji="🎬",
+                duration=duration,
+                qualities=qualities,
+            )
 
             with contextlib.suppress(Exception):
-                await status.edit_text("📤 Отправляю…")
-
-            try:
-                await send_external_video(message, uid, label, tmp_path, info, dl_info, emoji="🎬", source="youtube")
-            except Exception as e:
-                await _log_yt_err(message.bot, "send", uid, label, url, e)
-                with contextlib.suppress(Exception):
-                    await status.edit_text(
-                        "❌ Telegram отклонил файл — скорее всего, он слишком большой "
-                        "для отправки ботом (обычный лимит Telegram — 50 МБ на файл)."
-                    )
-                return
-
-            with contextlib.suppress(Exception):
-                await status.delete()
+                note = (
+                    ""
+                    if ffmpeg_available()
+                    else "\n\n⚠️ На сервере не найден ffmpeg — реально скачается максимум ~720p, "
+                    "даже если выбрать качество выше (YouTube не отдаёт готовые файлы в высоком "
+                    "качестве без склейки видео и звука)."
+                )
+                await status.edit_text(
+                    "🎞️ <b>Выбери качество видео</b>\n\nЧем выше качество — тем дольше скачивание и больше файл."
+                    + note,
+                    parse_mode="HTML",
+                    reply_markup=quality_choice_kb(req_id, qualities),
+                )
 
     finally:
         if tmp_path:
