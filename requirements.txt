@@ -1,10 +1,10 @@
-aiogram>=3.29.0
-aiohttp>=3.14.1
-python-dotenv>=1.2.2
-asyncpg>=0.29.0
+aiogram
+aiohttp
+python-dotenv
+asyncpg>
 # yt-dlp: YouTube регулярно меняет защиту форматов (PO-токены и т.п.), из-за
 # этого на старых версиях yt-dlp качество видео может "просесть" само по
 # себе (напр. отдаётся только 360p вместо 1080p+) без единой ошибки в коде.
 # Периодически обновляй: pip install -U yt-dlp --break-system-packages
-yt-dlp>=2025.6.9
-imageio-ffmpeg>=0.5.1
+yt-dlp
+imageio-ffmpeg
