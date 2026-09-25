@@ -51,6 +51,7 @@ CAT_TAG = {
     "adminadd": "adminadd",
     "admindel": "admindel",
     "providerfallback": "providerfallback",
+    "yt_dlp_outdated": "ytdlpold",
     "stars": "stars",
     "broadcast": "broadcast",
     "admin": "admin",
@@ -65,6 +66,7 @@ CAT_TAG = {
 ALLOWED_LOG_CATEGORIES = {
     "dlerr",
     "providerfallback",
+    "yt_dlp_outdated",
     "user",
     "stars",
     "userban",

@@ -119,14 +119,7 @@ class Storage:
             },
             "user_stats": {"downloads": {}, "stars": {}},
             "user_stats_period": {"d": {}, "n": {}, "m": {}, "y": {}},
-            # ---- реферальная система ----
-            "referrals": {},       # uid_str -> referrer_id (int): кто кого пригласил
-            "referrals_log": [],   # [{"user_id":, "referrer_id":, "ts":}, ...] — история
-            "ref_stats": {},       # uid_str -> {"referrals_count": int, "ref_points": int}
-            # ---- магазин подарков ----
-            "gift_requests": {},   # req_id_str -> {"user_id","gift_key","gift_name","gift_price","status","created_at","updated_at"}
-            "gift_requests_seq": 0,
-            "download_counters": {},  # uid_str -> общее кол-во скачиваний (для напоминаний про /ref)
+            "download_counters": {},  # uid_str -> общее кол-во скачиваний (для периодических напоминаний)
             "inline_cache": {},  # url_hash -> {"file_id","kind","ts"} — кэш для inline-режима
             "maintenance": {"enabled": False, "text": ""},  # технический режим (/tex)
         }
@@ -409,19 +402,12 @@ class Storage:
         apply_bucket(self.data["stats"]["all"])
         self._mark_dirty()
 
-    # 1 звезда = 1 билетик реферальной системы (начисляется автоматически за донат)
-    TICKETS_PER_STAR = 1
-    # 1 билетик за каждые 10₽ доната в рублях (крипто/DonationAlerts, вносится вручную админом)
-    TICKETS_PER_10_RUB = 1
-
-    def add_stars(self, uid: int, stars: int, award_tickets: bool = True) -> int:
-        """Начисляет донат звёздами. При award_tickets=True (по умолчанию — обычная
-        оплата Stars в боте) автоматически начисляет билетики 1⭐=1🎟.
-        Возвращает начисленные билетики (0, если award_tickets=False)."""
+    def add_stars(self, uid: int, stars: int) -> None:
+        """Начисляет донат звёздами (обычная оплата Stars в боте)."""
         from helpers import msk_now, period_keys
         stars = int(max(0, stars))
         if stars <= 0:
-            return 0
+            return
         now_dt = msk_now()
         keys = period_keys(now_dt)
 
@@ -441,20 +427,12 @@ class Storage:
 
         self._mark_dirty()
 
-        tickets = 0
-        if award_tickets:
-            tickets = stars * self.TICKETS_PER_STAR
-            self.add_ref_points_delta(uid, tickets)
-        return tickets
-
-    def add_money(self, uid: int, rub: int, award_tickets: bool = True) -> int:
-        """Начисляет донат в рублях (крипто/DonationAlerts). При award_tickets=True
-        автоматически начисляет билетики: 1🎟 за каждые 10₽.
-        Возвращает начисленные билетики (0, если award_tickets=False)."""
+    def add_money(self, uid: int, rub: int) -> None:
+        """Начисляет донат в рублях (крипто/DonationAlerts)."""
         from helpers import msk_now, period_keys
         rub = int(max(0, rub))
         if rub <= 0:
-            return 0
+            return
         now_dt = msk_now()
         keys = period_keys(now_dt)
 
@@ -474,29 +452,21 @@ class Storage:
 
         self._mark_dirty()
 
-        tickets = 0
-        if award_tickets:
-            tickets = (rub // 10) * self.TICKETS_PER_10_RUB
-            if tickets:
-                self.add_ref_points_delta(uid, tickets)
-        return tickets
-
     def get_user_stars(self, uid: int) -> int:
         return int(self.data.get("user_stats", {}).get("stars", {}).get(str(uid), 0))
 
     def get_user_money(self, uid: int) -> int:
         return int(self.data.get("user_stats", {}).get("money", {}).get(str(uid), 0))
 
-    def set_user_stars(self, uid: int, value: int) -> Dict[str, int]:
+    def set_user_stars(self, uid: int, value: int) -> int:
         """Ручная (админская) правка суммы доната звёздами: УСТАНАВЛИВАЕТ
         абсолютное значение (не добавляет). Разница (дельта) применяется к
-        общей статистике /stats. Если значение выросло — доначисляются
-        билетики за разницу (1⭐=1🎟); при уменьшении билетики не отбираются."""
+        общей статистике /stats."""
         value = int(max(0, value))
         old = self.get_user_stars(uid)
         delta = value - old
         if delta == 0:
-            return {"stars": value, "tickets_awarded": 0}
+            return value
 
         from helpers import msk_now, period_keys
         now_dt = msk_now()
@@ -517,23 +487,17 @@ class Storage:
             bucket["stars"] = max(0, int(bucket.get("stars", 0)) + delta)
 
         self._mark_dirty()
+        return value
 
-        tickets_awarded = 0
-        if delta > 0:
-            tickets_awarded = delta * self.TICKETS_PER_STAR
-            self.add_ref_points_delta(uid, tickets_awarded)
-        return {"stars": value, "tickets_awarded": tickets_awarded}
-
-    def set_user_money(self, uid: int, value: int) -> Dict[str, int]:
+    def set_user_money(self, uid: int, value: int) -> int:
         """Ручная (админская) правка суммы доната в рублях: УСТАНАВЛИВАЕТ
         абсолютное значение (не добавляет). Разница (дельта) применяется к
-        общей статистике /stats. Если значение выросло — доначисляются
-        билетики за разницу (1🎟 за 10₽); при уменьшении билетики не отбираются."""
+        общей статистике /stats."""
         value = int(max(0, value))
         old = self.get_user_money(uid)
         delta = value - old
         if delta == 0:
-            return {"money": value, "tickets_awarded": 0}
+            return value
 
         from helpers import msk_now, period_keys
         now_dt = msk_now()
@@ -554,13 +518,7 @@ class Storage:
             bucket["money"] = max(0, int(bucket.get("money", 0)) + delta)
 
         self._mark_dirty()
-
-        tickets_awarded = 0
-        if delta > 0:
-            tickets_awarded = (delta // 10) * self.TICKETS_PER_10_RUB
-            if tickets_awarded:
-                self.add_ref_points_delta(uid, tickets_awarded)
-        return {"money": value, "tickets_awarded": tickets_awarded}
+        return value
 
     def inc_audio(self, uid: int, items: int = 1) -> None:
         from helpers import msk_now, period_keys
@@ -667,199 +625,6 @@ class Storage:
         mp[category] = int(mp.get(category, 0)) + 1
         self._mark_dirty()
         return int(mp[category])
-
-    # ---------- referrals ----------
-    def get_referrer(self, uid: int) -> Optional[int]:
-        v = self.data.get("referrals", {}).get(str(uid))
-        if v is None:
-            return None
-        return int(v["referrer_id"]) if isinstance(v, dict) else int(v)
-
-    def set_referral(self, uid: int, referrer_id: int) -> bool:
-        """
-        Фиксирует, что uid пришёл по ссылке referrer_id (баллы пока НЕ начисляются —
-        это происходит один раз, при первом успешном скачивании uid, см.
-        try_reward_referral). Возвращает True, только если это реально новая,
-        валидная запись: сам на себя не считается, повторно один и тот же
-        реферал не переписывается.
-        """
-        if uid == referrer_id:
-            return False
-        refs = self.data.setdefault("referrals", {})
-        if str(uid) in refs:
-            return False
-        refs[str(uid)] = {"referrer_id": int(referrer_id), "rewarded": False, "ts": int(time.time())}
-        self.data.setdefault("referrals_log", []).append(
-            {"user_id": uid, "referrer_id": referrer_id, "ts": int(time.time())}
-        )
-        self._mark_dirty()
-        return True
-
-    def try_reward_referral(self, uid: int, points: int) -> Optional[Dict[str, int]]:
-        """
-        Начисляет баллы пригласившему за uid — но только один раз, при первом
-        успешном скачивании этого uid (а не при простом /start). Возвращает
-        {"referrer_id","referrals_count","ref_points"} если начисление произошло
-        сейчас, иначе None (нет реферала или уже начислено раньше).
-        """
-        refs = self.data.get("referrals", {})
-        rec = refs.get(str(uid))
-        if rec is None:
-            return None
-        if isinstance(rec, dict):
-            if rec.get("rewarded"):
-                return None
-            referrer_id = int(rec["referrer_id"])
-            rec["rewarded"] = True
-        else:
-            # обратная совместимость со старым форматом записи (просто int)
-            referrer_id = int(rec)
-            refs[str(uid)] = {"referrer_id": referrer_id, "rewarded": True, "ts": int(time.time())}
-        rs = self.add_ref_points(referrer_id, points)
-        self._mark_dirty()
-        return {"referrer_id": referrer_id, **rs}
-
-    def add_ref_points(self, referrer_id: int, points: int) -> Dict[str, int]:
-        """Начисляет баллы пригласившему и увеличивает счётчик рефералов."""
-        rs = self.data.setdefault("ref_stats", {})
-        rec = rs.setdefault(str(referrer_id), {"referrals_count": 0, "ref_points": 0})
-        rec["referrals_count"] = int(rec.get("referrals_count", 0)) + 1
-        rec["ref_points"] = int(rec.get("ref_points", 0)) + int(points)
-        self._mark_dirty()
-        return {"referrals_count": int(rec["referrals_count"]), "ref_points": int(rec["ref_points"])}
-
-    def get_ref_stats(self, uid: int) -> Dict[str, int]:
-        rec = self.data.get("ref_stats", {}).get(str(uid)) or {}
-        return {
-            "referrals_count": int(rec.get("referrals_count", 0)),
-            "ref_points": int(rec.get("ref_points", 0)),
-        }
-
-    def add_ref_points_delta(self, uid: int, delta: int) -> int:
-        """Списание/возврат/ручная корректировка баллов админом."""
-        rs = self.data.setdefault("ref_stats", {})
-        rec = rs.setdefault(str(uid), {"referrals_count": 0, "ref_points": 0})
-        rec["ref_points"] = int(rec.get("ref_points", 0)) + int(delta)
-        self._mark_dirty()
-        return int(rec["ref_points"])
-
-    def add_ref_count_delta(self, uid: int, delta: int) -> int:
-        """Ручная корректировка счётчика рефералов админом (не уходит в минус)."""
-        rs = self.data.setdefault("ref_stats", {})
-        rec = rs.setdefault(str(uid), {"referrals_count": 0, "ref_points": 0})
-        rec["referrals_count"] = max(0, int(rec.get("referrals_count", 0)) + int(delta))
-        self._mark_dirty()
-        return int(rec["referrals_count"])
-
-    def reset_ref_stats(self, uid: int) -> None:
-        """Полностью обнуляет баллы и счётчик рефералов пользователя."""
-        rs = self.data.setdefault("ref_stats", {})
-        rs[str(uid)] = {"referrals_count": 0, "ref_points": 0}
-        self._mark_dirty()
-
-    def total_referrals_count(self) -> int:
-        """Сколько всего людей пришло по реферальным ссылкам (все записи, не только вознаграждённые)."""
-        return len(self.data.get("referrals", {}))
-
-    def referrals_of(self, referrer_id: int) -> List[int]:
-        """Список uid всех, кого пригласил referrer_id (по записям в 'referrals')."""
-        refs = self.data.get("referrals", {})
-        out: List[int] = []
-        for uid_str, rec in refs.items():
-            rid = rec.get("referrer_id") if isinstance(rec, dict) else rec
-            try:
-                if int(rid) == int(referrer_id):
-                    out.append(int(uid_str))
-            except (TypeError, ValueError):
-                continue
-        return out
-
-    def top_referrers(self, limit: int = 10) -> List[Tuple[int, int]]:
-        from helpers import is_admin  # локальный импорт — без цикла на уровне модулей
-        rs = self.data.get("ref_stats", {})
-        items = [(int(uid), int((rec or {}).get("referrals_count", 0))) for uid, rec in rs.items()]
-        items = [x for x in items if x[1] > 0 and not is_admin(x[0])]
-        items.sort(key=lambda x: x[1], reverse=True)
-        return items[:limit]
-
-    def ref_rank(self, uid: int) -> Optional[int]:
-        from helpers import is_admin
-        rs = self.data.get("ref_stats", {})
-        items = sorted(
-            ((int(u), int((r or {}).get("referrals_count", 0))) for u, r in rs.items() if not is_admin(int(u))),
-            key=lambda x: x[1],
-            reverse=True,
-        )
-        for i, (u, cnt) in enumerate(items, start=1):
-            if u == uid:
-                return i if cnt > 0 else None
-        return None
-
-    # ---------- gift requests (магазин подарков) ----------
-    def new_gift_request(
-        self,
-        uid: int,
-        gift_key: str,
-        gift_name: str,
-        gift_price: int,
-        payment_type: str = "tickets",
-        recipient_id: int = None,
-        gift_comment: str = "",
-        telegram_payment_charge_id: str = "",
-    ) -> int:
-        """Создаёт новую заявку на подарок.
-        
-        Args:
-            uid: ID покупателя
-            gift_key: ключ подарка
-            gift_name: название подарка
-            gift_price: цена в звёздах или билетиках
-            payment_type: "stars" (реальная оплата Telegram Stars) или "tickets"
-                (списание с виртуального баланса реферальной системы)
-            recipient_id: ID получателя (если None, то uid)
-            gift_comment: комментарий от покупателя (при даровании другому)
-            telegram_payment_charge_id: ID платежа Telegram Stars (для payment_type
-                "stars") — нужен, чтобы при отклонении заявки сделать настоящий
-                возврат звёзд через refundStarPayment.
-        """
-        gr = self.data.setdefault("gift_requests", {})
-        seq = int(self.data.get("gift_requests_seq", 0)) + 1
-        self.data["gift_requests_seq"] = seq
-        now_ts = int(time.time())
-        if recipient_id is None:
-            recipient_id = uid
-        gr[str(seq)] = {
-            "user_id": int(uid),
-            "recipient_id": int(recipient_id),
-            "gift_key": gift_key,
-            "gift_name": gift_name,
-            "gift_price": int(gift_price),
-            "payment_type": payment_type,  # "stars" или "tickets"
-            "gift_comment": gift_comment,
-            "telegram_payment_charge_id": telegram_payment_charge_id,
-            "status": "pending",
-            "created_at": now_ts,
-            "updated_at": now_ts,
-        }
-        self._mark_dirty()
-        return seq
-
-    def get_gift_request(self, req_id: int) -> Optional[Dict[str, Any]]:
-        rec = self.data.get("gift_requests", {}).get(str(req_id))
-        return dict(rec) if rec else None
-
-    def set_gift_request_status(self, req_id: int, status: str) -> None:
-        gr = self.data.get("gift_requests", {}).get(str(req_id))
-        if gr is not None:
-            gr["status"] = status
-            gr["updated_at"] = int(time.time())
-            self._mark_dirty()
-
-    def user_gift_requests(self, uid: int, limit: int = 20) -> List[Dict[str, Any]]:
-        gr = self.data.get("gift_requests", {})
-        items = [dict(v, id=int(k)) for k, v in gr.items() if int(v.get("user_id", -1)) == int(uid)]
-        items.sort(key=lambda x: x.get("created_at", 0), reverse=True)
-        return items[:limit]
 
     # ---- совместимость: убраны strikes, оставлены заглушки ----
     def strikes_count(self, uid: int, kind: str = "spam") -> int:

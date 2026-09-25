@@ -1,6 +1,6 @@
 """
-Провайдеры скачивания медиа из TikTok: основной (tikwm.com API)
-и резервный (Apify, опционально), а также логика переключения между ними.
+Провайдеры скачивания медиа из TikTok: основной (tikwm.com API) и логика
+переключения между несколькими инстансами/попытками при сбоях.
 """
 import json
 import time
@@ -17,8 +17,6 @@ from aiogram import Bot
 
 from config import (
     API_URL,
-    APIFY_TOKEN,
-    APIFY_ACTOR,
     TIKWM_COOLDOWN_SEC,
     API_ERROR_WINDOW_SEC,
     API_ERROR_THRESHOLD,
@@ -44,9 +42,10 @@ class MediaInfo:
 def _deep_find_str(data: Any, keys: List[str], _depth: int = 0) -> Optional[str]:
     """
     Рекурсивно ищет в JSON (dict/list) первое строковое значение по одному
-    из ключей-кандидатов. Нужен для "запасных" провайдеров, у которых точная
+    из ключей-кандидатов. Нужен для запасных источников, у которых точная
     форма ответа может отличаться/меняться — сканируем несколько вариантов
-    вложенности вместо жёсткой привязки к одному пути.
+    вложенности вместо жёсткой привязки к одному пути. Сейчас не задействован
+    (запасной провайдер убран), оставлен как готовый утиль на будущее.
     """
     if _depth > 4 or data is None:
         return None
@@ -66,44 +65,6 @@ def _deep_find_str(data: Any, keys: List[str], _depth: int = 0) -> Optional[str]
             if r:
                 return r
     return None
-
-
-def _deep_find_url(data: Any, keys: List[str], _depth: int = 0) -> Optional[str]:
-    v = _deep_find_str(data, keys, _depth)
-    return v if v and v.startswith("http") else None
-
-
-def _deep_find_list(data: Any, keys: List[str], _depth: int = 0) -> List[str]:
-    """Ищет список URL-строк (фото/слайды) по ключам-кандидатам."""
-    if _depth > 4 or data is None:
-        return []
-    if isinstance(data, dict):
-        for k in keys:
-            v = data.get(k)
-            if isinstance(v, list) and v:
-                out: List[str] = []
-                for item in v:
-                    if isinstance(item, str) and item.startswith("http"):
-                        out.append(item)
-                    elif isinstance(item, dict):
-                        u = item.get("url") or item.get("image") or item.get("urlList")
-                        if isinstance(u, list) and u:
-                            u = u[0]
-                        if isinstance(u, str) and u.startswith("http"):
-                            out.append(u)
-                if out:
-                    return out
-        for v in data.values():
-            if isinstance(v, (dict, list)):
-                r = _deep_find_list(v, keys, _depth + 1)
-                if r:
-                    return r
-    elif isinstance(data, list):
-        for item in data:
-            r = _deep_find_list(item, keys, _depth + 1)
-            if r:
-                return r
-    return []
 
 
 class BaseProvider:
@@ -317,85 +278,14 @@ class TikWMClient(_DlErrMixin, BaseProvider):
         raise RuntimeError(f"Download failed after retries: {last_err}") from last_err
 
 
-class ApifyProvider(_DlErrMixin, BaseProvider):
-    """
-    Запасной платный источник через Apify (нужен APIFY_TOKEN в .env и
-    ALT_PROVIDER=apify). По умолчанию используется актор apilabs/tiktok-downloader
-    (см. APIFY_ACTOR в config.py) — парсинг ответа тоже защитный (ищем несколько
-    вариантов полей вместо жёсткой привязки к одному пути),
-    т.к. точная схема датасета зависит от актора.
-    """
-    name = "apify"
-
-    def __init__(self, session: aiohttp.ClientSession, bot: Optional[Bot]):
-        self.session = session
-        self.bot = bot
-
-    async def get_media(self, url: str) -> MediaInfo:
-        if not APIFY_TOKEN:
-            raise RuntimeError("APIFY_TOKEN not set")
-
-        run_url = f"https://api.apify.com/v2/acts/{APIFY_ACTOR}/run-sync-get-dataset-items"
-        t0 = time.perf_counter()
-        try:
-            async with self.session.post(
-                run_url,
-                params={"token": APIFY_TOKEN},
-                json={"postURLs": [url], "shouldDownloadVideos": True, "shouldDownloadCovers": False},
-                headers={"Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                raw = await resp.read()
-                if resp.status >= 400:
-                    raise RuntimeError(f"Apify HTTP {resp.status}: {raw[:300]!r}")
-                items = json.loads(raw.decode("utf-8", "ignore"))
-
-            if not items:
-                raise RuntimeError("Apify: empty dataset (актор не вернул данных для этой ссылки)")
-            item = items[0] if isinstance(items, list) else items
-
-            video = _deep_find_url(item, ["downloadAddr", "play", "video_url", "videoUrl", "noWatermark", "hdplay"])
-            photos = _deep_find_list(item, ["images", "imagePost", "photos", "slides"])
-            music = _deep_find_url(item, ["musicMeta", "music", "music_url", "musicUrl", "playUrl"])
-            description = _normalize_description(_deep_find_str(item, ["text", "title", "desc", "description"]))
-
-            if not video and not photos:
-                raise RuntimeError(f"Apify: no video/photo links in dataset item (keys: {list(item.keys()) if isinstance(item, dict) else type(item)})")
-
-            return MediaInfo(video=video, photos=photos, music=music, description=description)
-
-        except Exception as e:
-            await self._log_dlerr("api_apify", url, 1, ms_since(t0), e)
-            raise
-
-    async def download_to_file(
-        self,
-        url: str,
-        path: Path,
-        max_bytes: int,
-        stage: str,
-        progress_cb: Optional[Callable] = None,
-        cancel_cb: Optional[Callable] = None,
-    ) -> int:
-        client = TikWMClient(self.session, self.bot)
-        return await client.download_to_file(
-            url,
-            path,
-            max_bytes,
-            stage=stage,
-            progress_cb=progress_cb,
-            cancel_cb=cancel_cb,
-        )
-
-
 class ProviderSwitcher:
     """
     Цепочка провайдеров с реальным переключением "на лету": если очередной
     провайдер не смог отдать медиа — тут же (в рамках того же запроса
     пользователя) пробуем следующий в списке, а не ждём.
 
-    providers[0] — основной (tikwm), дальше — запасные по порядку
-    (например tiklydown, потом apify, если настроен). Если у провайдера
+    providers[0] — основной (tikwm), дальше — запасные по порядку, если такие
+    появятся. Если у провайдера
     подряд накопилось много ошибок за короткое окно — временно (на время
     "остывания") отправляем его в конец очереди, чтобы не долбить
     видимо упавший сервис на каждый запрос.

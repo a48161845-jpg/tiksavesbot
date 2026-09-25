@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import SUPPORT_USERNAME, CRYPTO_DONATE_URL, DONATIONALERTS_URL, BOT_SHARE_URL, STARS_MIN, STARS_MAX, GIFTS, MAX_VIDEO_MB
+from config import DONATIONALERTS_URL, BOT_SHARE_URL, STARS_MIN, STARS_MAX, MAX_VIDEO_MB
 from helpers import html_escape, code
 
 # ================== STATS / TOP KEYBOARDS ==================
@@ -62,7 +62,6 @@ START_TEXT = (
     "🧭 <b>Полезное:</b>\n"
     "🧾 Помощь — /help\n"
     "📊 Моя статистика — /me\n"
-    "🎁 Рефералы и подарки — /ref\n"
     "💛 Поддержать проект — /donate\n"
     "🆘 Поддержка — /support"
 )
@@ -73,7 +72,6 @@ def donate_main_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="⭐ Донат звёздами", callback_data="donate:stars")],
             [InlineKeyboardButton(text="💳 Donation Alerts", url=DONATIONALERTS_URL)],
-            [InlineKeyboardButton(text="💲 Донат криптой", url=CRYPTO_DONATE_URL)],
             [InlineKeyboardButton(text="🆘 Поддержка", callback_data="donate:support")],
         ]
     )
@@ -114,8 +112,15 @@ STARS_MENU_TEXT = (
 SUPPORT_TEXT = (
     "🆘 <b>Поддержка</b>\n"
     "━━━━━━━━━━━━━━━━━━━━\n\n"
-    f"Есть вопрос или что-то не работает? Пиши сюда: {html_escape(SUPPORT_USERNAME)}\n\n"
+    "Опиши свой вопрос или проблему одним сообщением — оно уйдёт напрямую администратору.\n\n"
     "Приложи ссылку на видео и опиши, что пошло не так — так разберёмся быстрее 🙌"
+)
+SUPPORT_SENT_TEXT = (
+    "✅ <b>Сообщение отправлено!</b>\n\n"
+    "Администратор скоро ответит тебе прямо здесь, в этом чате."
+)
+SUPPORT_TIMEOUT_TEXT = (
+    "⌛ Время ожидания сообщения истекло. Если вопрос ещё актуален — напиши /support заново."
 )
 SHARE_TEXT = "🔥 Нашёл топового бота для скачивания видео и фото из TikTok — без водяных знаков и подписок. Залетай ☝️"
 
@@ -128,8 +133,7 @@ HELP_TEXT = (
     "🎬 Скачать видео — помощь по скачиванию видео\n"
     "🖼️ Скачать фото — помощь по скачиванию фото\n"
     "⚠️ Лимиты — помощь по лимитам\n"
-    "📳 Inline-режим — помощь по скачиванию видео в Inline-режиме\n"
-    "👥 Реферальная система — помощь по реферальной системе"
+    "📳 Inline-режим — помощь по скачиванию видео в Inline-режиме"
 )
 
 def help_kb() -> InlineKeyboardMarkup:
@@ -141,10 +145,7 @@ def help_kb() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="⚠️ Лимиты", callback_data="help:limits"),
-            ],
-            [
                 InlineKeyboardButton(text="📳 Inline-режим", callback_data="help:inline"),
-                InlineKeyboardButton(text="👥 Реферальная система", callback_data="help:referral"),
             ],
             [
                 InlineKeyboardButton(text="❌ Закрыть", callback_data="help:close"),
@@ -167,8 +168,9 @@ HELP_SECTIONS = {
         "🎬 <b>Помощь по скачиванию видео</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "1️⃣ Пришли ссылку на TikTok, YouTube, Instagram, VK или Pinterest 📱\n\n"
-        "2️⃣ Подожди несколько секунд пока скачивается видео ⏳\n\n"
-        "3️⃣ Получай готовое видео в хорошем качестве без водяных знаков 🎉\n\n"
+        "2️⃣ Для YouTube/Instagram/VK/Pinterest выбери качество видео (или «Только звук») 🎚️\n\n"
+        "3️⃣ Подожди несколько секунд пока скачивается видео ⏳\n\n"
+        "4️⃣ Получай готовое видео в хорошем качестве без водяных знаков 🎉\n\n"
         f"⛔ При ошибке повтори попытку, при повторной ошибке напиши в /support"
     ),
     "photo": (
@@ -205,17 +207,6 @@ HELP_SECTIONS = {
         "3️⃣ Получай готовое видео в хорошем качестве без водяных знаков 🎉\n\n"
         f"⛔ При ошибке повтори попытку, при повторной ошибке напиши в /support"
     ),
-    "referral": (
-        "👥 <b>Помощь по реферальной системе</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "1️⃣ Забери свою ссылку в /ref\n\n"
-        "2️⃣ Отправь её друзьям\n\n"
-        "3️⃣ Как только друг скачает первое видео — тебе: 💎 +10 🎟\n\n"
-        "4️⃣ Копи баллы и меняй их на подарки в магазине 🎁\n\n"
-        "✋ Подарки выдаются вручную администрацией — обычно быстро.\n\n"
-        "⛔ Перед выводом каждый реферал будет проверяться вручную, за накрутки будет отказано в выводе, "
-        "а рефералы обнулены."
-    ),
 }
 
 # ================== POST-DOWNLOAD / VIDEO KEYBOARDS ==================
@@ -247,6 +238,39 @@ def under_video_kb(has_music: bool = False, has_description: bool = False, req_i
         return None
     return InlineKeyboardMarkup(inline_keyboard=[row])
 
+def _fmt_size(num_bytes) -> str:
+    if not num_bytes:
+        return ""
+    mb = num_bytes / (1024 * 1024)
+    if mb < 1:
+        return ""
+    return f" (~{mb:.0f} МБ)" if mb < 1024 else f" (~{mb/1024:.1f} ГБ)"
+
+
+def quality_choice_kb(req_id: str, qualities: List[dict]) -> InlineKeyboardMarkup:
+    """
+    Кнопки выбора качества перед скачиванием видео из YouTube/Instagram/VK/
+    Pinterest: одна кнопка на каждое доступное разрешение (2 в ряд) плюс
+    отдельная строка "Только звук (MP3)" и "Отмена".
+    """
+    rows: List[List[InlineKeyboardButton]] = []
+    row: List[InlineKeyboardButton] = []
+    for q in qualities:
+        height = q["height"]
+        label = f"🎬 {q['label']}{_fmt_size(q.get('filesize'))}"
+        row.append(InlineKeyboardButton(text=label, callback_data=f"q:v:{height}:{req_id}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    rows.append([InlineKeyboardButton(text="✨ Лучшее качество", callback_data=f"q:v:0:{req_id}")])
+    rows.append([InlineKeyboardButton(text="🎵 Только звук (MP3)", callback_data=f"q:a:0:{req_id}")])
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"q:x:0:{req_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def video_choice_kb() -> InlineKeyboardMarkup:
     """Только «Скачать видео» и «Отмена» — кнопка музыки перенесена под видео."""
     return InlineKeyboardMarkup(
@@ -270,9 +294,6 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="📌 Напоминание", callback_data="ad:reminder"),
                 InlineKeyboardButton(text="💛 Донат", callback_data="ad:donate"),
-            ],
-            [
-                InlineKeyboardButton(text="🎁 Рефералка", callback_data="ad:refreminder"),
             ],
             [
                 InlineKeyboardButton(text="👑 Администраторы", callback_data="ad:adminlist"),
@@ -301,7 +322,7 @@ ADMIN_MENU_TEXT = (
     "🚫 <b>Бан-лист</b> — активные баны\n"
     "🗄 <b>Дамп БД</b> — скачать базу данных\n"
     "👑 <b>Администраторы</b> — список и управление\n"
-    "📌 <b>Напоминание</b> / 💛 <b>Донат</b> / 🎁 <b>Рефералка</b> — рассылки вручную\n"
+    "📌 <b>Напоминание</b> / 💛 <b>Донат</b> — рассылки вручную\n"
     "🧾 <b>Команды</b> — полный список\n"
 )
 
@@ -322,13 +343,6 @@ ADMIN_HELP_TEXT = (
     f"└ {code('/top 2026-02-01 2026-02-07')} — диапазон\n"
     "   <i>(топ рефереров показывается там же автоматически)</i>\n\n"
 
-    "🎁 <b>Реферальная система</b>\n"
-    f"├ {code('/refid ID')} — кто пригласил пользователя\n"
-    f"├ {code('/refinfo ID')} — список его рефералов\n"
-    f"├ {code('/refpoints ID +50')} — начислить/списать баллы\n"
-    f"├ {code('/refcount ID +3')} — скорректировать счётчик рефералов\n"
-    f"└ {code('/refreset ID')} — обнулить баллы и рефералов\n\n"
-
     "🛠 <b>Технический режим</b>\n"
     f"├ {code('/tex текст')} — включить (бот отвечает этим текстом всем, кроме админов)\n"
     f"└ {code('/tex off')} — выключить\n\n"
@@ -344,7 +358,7 @@ ADMIN_HELP_TEXT = (
     f"└ {code('/admindel ID')} — удалить (только суперадмин)\n\n"
 
     "👤 <b>Пользователь</b>\n"
-    f"└ {code('/info ID')} — информация о пользователе (включая рефералов)\n\n"
+    f"└ {code('/info ID')} — информация о пользователе\n\n"
 
     "💛 <b>Донаты (ручная правка)</b>\n"
     f"├ {code('/stars ID 250')} — установить сумму доната звёздами\n"
@@ -375,60 +389,5 @@ def broadcast_cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⛔ Остановить рассылку", callback_data="ad:bcancel")],
-        ]
-    )
-
-
-# ================== REFERRAL / GIFT SHOP ==================
-def ref_menu_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 Магазин подарков", callback_data="ref:shop")],
-            [InlineKeyboardButton(text="📦 Мои заявки", callback_data="ref:myrequests")],
-            [InlineKeyboardButton(text="🏆 Топ рефереров", callback_data="ref:top")],
-        ]
-    )
-
-
-def ref_back_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="ref:back")]])
-
-
-def gift_shop_kb(balance: int) -> InlineKeyboardMarkup:
-    """Магазин подарков в /ref — каждый подарок 55⭐ (реальная оплата Stars,
-    доступна всегда) или 500🎟 (списание билетиков, нужен баланс)."""
-    rows: List[List[InlineKeyboardButton]] = []
-    row: List[InlineKeyboardButton] = []
-    for g in GIFTS:
-        # За звёзды можно купить всегда (это настоящая оплата Telegram Stars,
-        # а не виртуальный баланс) — поэтому подарки в магазине не блокируем.
-        row.append(InlineKeyboardButton(text=f"{g['emoji']} {g['name']}", callback_data=f"gift:buy:{g['key']}"))
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад в /ref", callback_data="ref:back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def gift_confirm_kb(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"gift:confirm:{key}"),
-                InlineKeyboardButton(text="❌ Отмена", callback_data="gift:cancel"),
-            ]
-        ]
-    )
-
-
-def gift_admin_kb(req_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Выдать", callback_data=f"admgift:ok:{req_id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admgift:no:{req_id}"),
-            ]
         ]
     )

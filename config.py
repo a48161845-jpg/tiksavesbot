@@ -32,8 +32,56 @@ DATA_FILE = Path("data.json")
 API_URL = "https://tikwm.com/api/"
 ADMINS = {7233257134}  # <-- твой Telegram ID
 
+# Главный админ, куда в ЛС боту приходят заявки в поддержку (/support) —
+# сообщения пользователей пересылаются сюда, обрабатываются ответом
+# (Reply) на пересланное сообщение прямо в этом чате.
+SUPPORT_ADMIN_ID = next(iter(ADMINS))
+
 ADMIN_LOG_FILE = Path("admin.log")
 
+# ========= ЛОКАЛЬНЫЙ BOT API SERVER (нужен, чтобы слать файлы > 50 МБ) =========
+# Обычный облачный Bot API (api.telegram.org) физически не даёт боту
+# ОТПРАВЛЯТЬ файлы тяжелее 50 МБ — это ограничение Telegram, не бота, и
+# никакими настройками в коде оно не обходится. Чтобы отправлять видео
+# весом до 2000 МБ (2 ГБ), нужен свой Local Bot API Server
+# (https://github.com/tdlib/telegram-bot-api).
+#
+# Тут два варианта:
+# 1) Просто заполни API_ID и API_HASH (my.telegram.org -> API development
+#    tools) — bot.py сам запустит telegram-bot-api рядом с ботом (на этом
+#    же устройстве, в т.ч. в Termux) и подключится к нему на 127.0.0.1.
+# 2) Если сервер уже поднят где-то отдельно (свой процесс/другая машина) —
+#    просто укажи LOCAL_BOT_API_URL напрямую, тогда API_ID/API_HASH не нужны.
+#
+# Если ничего из этого не задано — работаем как обычно, лимит 49 МБ.
+API_ID = os.getenv("API_ID", "").strip()
+API_HASH = os.getenv("API_HASH", "").strip()
+
+# Путь к бинарнику telegram-bot-api (если не в PATH — укажи полный путь,
+# например /data/data/com.termux/files/usr/bin/telegram-bot-api).
+LOCAL_BOT_API_BIN = os.getenv("LOCAL_BOT_API_BIN", "telegram-bot-api").strip()
+LOCAL_BOT_API_PORT = int(os.getenv("LOCAL_BOT_API_PORT", "8081"))
+# Куда telegram-bot-api будет сохранять временные файлы (свои, не путать
+# с temp-файлами самого бота).
+LOCAL_BOT_API_DIR = os.getenv("LOCAL_BOT_API_DIR", "").strip() or str(Path.home() / ".telegram-bot-api")
+
+_explicit_local_url = os.getenv("LOCAL_BOT_API_URL", "").strip().rstrip("/")
+if _explicit_local_url:
+    # Сервер поднят отдельно (возможно, не локально) — просто ходим туда.
+    LOCAL_BOT_API_URL = _explicit_local_url
+    LOCAL_BOT_API_IS_LOCAL = os.getenv("LOCAL_BOT_API_IS_LOCAL", "1").strip() == "1"
+elif API_ID and API_HASH:
+    # API_ID/API_HASH заданы — bot.py сам поднимет сервер на этом устройстве
+    # и мы всегда ходим на локальный порт.
+    LOCAL_BOT_API_URL = f"http://127.0.0.1:{LOCAL_BOT_API_PORT}"
+    LOCAL_BOT_API_IS_LOCAL = True
+else:
+    LOCAL_BOT_API_URL = ""
+    LOCAL_BOT_API_IS_LOCAL = False
+
+# Запасной контакт для уже забаненных пользователей (гейт блокирует им
+# доступ ко всем командам бота, включая /support, поэтому у них должен
+# остаться способ написать напрямую).
 SUPPORT_USERNAME = "@tiksavesbotsupport"
 try:
     MSK_TZ = ZoneInfo("Europe/Moscow")
@@ -67,7 +115,7 @@ INSTAGRAM_RE = re.compile(r"(https?://)?(www\.)?instagram\.com/(reel|reels|p|tv)
 VK_RE = re.compile(r"(https?://)?(www\.|m\.)?(vk\.com|vk\.ru|vkvideo\.ru)/(video|clip)", re.I)
 PINTEREST_RE = re.compile(r"(https?://)?(www\.)?(pinterest\.[a-z.]+/pin/|pin\.it/)", re.I)
 
-YOUTUBE_MAX_DURATION_SEC = int(os.getenv("YOUTUBE_MAX_DURATION_SEC", "1800"))  # 30 минут
+YOUTUBE_MAX_DURATION_SEC = int(os.getenv("YOUTUBE_MAX_DURATION_SEC", str(3 * 3600)))  # 3 часа
 # Для вертикальных Shorts yt-dlp репортит "height" как реальную высоту в
 # пикселях (у "1080p"-шортса это 1920, а не 1080!) — если тут стоит 720,
 # такие шортсы срезаются до огрызка качества. Ставим с запасом, чтобы
@@ -76,15 +124,28 @@ YOUTUBE_MAX_HEIGHT = int(os.getenv("YOUTUBE_MAX_HEIGHT", "1920"))
 
 # Telegram (обычный облачный Bot API) не даёт боту отправлять файлы больше
 # 50 МБ — берём с небольшим запасом снизу.
-YOUTUBE_MAX_VIDEO_MB = int(os.getenv("YOUTUBE_MAX_VIDEO_MB", "49"))
+YOUTUBE_MAX_VIDEO_MB = int(os.getenv("YOUTUBE_MAX_VIDEO_MB", "2000" if LOCAL_BOT_API_URL else "49"))
 YOUTUBE_MAX_VIDEO_BYTES = YOUTUBE_MAX_VIDEO_MB * 1024 * 1024
 
 MEDIA_GROUP_LIMIT = 10
 PAGE_SIZE = 10
 PENDING_TTL_SEC = 300
 
+# ========= ВЫБОР КАЧЕСТВА ВИДЕО (YouTube/Instagram/VK/Pinterest) =========
+# Сколько времени у пользователя есть, чтобы нажать на кнопку качества,
+# прежде чем предложение "протухнет" и нужно будет прислать ссылку заново.
+QUALITY_CHOICE_TTL_SEC = int(os.getenv("QUALITY_CHOICE_TTL_SEC", "600"))
+
+# ========= СКОРОСТЬ СКАЧИВАНИЯ (yt-dlp: YouTube/Instagram/VK/Pinterest) =========
+# Параллельные фрагменты для DASH/HLS-потоков — резко ускоряет скачивание
+# больших видео (YouTube/VK часто отдают именно такими потоками). Без этого
+# yt-dlp тянет фрагменты строго по одному.
+YOUTUBE_CONCURRENT_FRAGMENTS = int(os.getenv("YOUTUBE_CONCURRENT_FRAGMENTS", "8"))
+# Размер "чанка" при скачивании обычных (progressive) HTTP-ссылок — параллельные
+# HTTP Range-запросы вместо одного сплошного потока.
+YOUTUBE_HTTP_CHUNK_MB = int(os.getenv("YOUTUBE_HTTP_CHUNK_MB", "10"))
+
 # ========= DONATE =========
-CRYPTO_DONATE_URL = os.getenv("CRYPTO_DONATE_URL", "").strip() or "https://t.me/send?start=IVba6SXTH9iy"
 DONATIONALERTS_URL = os.getenv("DONATIONALERTS_URL", "").strip() or "https://dalink.to/tiksavesbot"
 BOT_SHARE_URL = os.getenv("BOT_SHARE_URL", "").strip() or "https://t.me/tiksavesbot"
 STARS_MIN = int(os.getenv("STARS_MIN", "1"))
@@ -120,7 +181,7 @@ DESCRIPTION_TG_LIMIT = 3500
 # ========= VIDEO/AUDIO FALLBACK DOWNLOAD =========
 # Telegram (обычный облачный Bot API) не даёт боту отправлять файлы больше
 # 50 МБ — это ограничение платформы, не бота.
-MAX_VIDEO_MB = int(os.getenv("MAX_VIDEO_MB", "49"))
+MAX_VIDEO_MB = int(os.getenv("MAX_VIDEO_MB", "2000" if LOCAL_BOT_API_URL else "49"))
 MAX_VIDEO_BYTES = MAX_VIDEO_MB * 1024 * 1024
 MAX_AUDIO_MB = int(os.getenv("MAX_AUDIO_MB", "25"))
 MAX_AUDIO_BYTES = MAX_AUDIO_MB * 1024 * 1024
@@ -128,11 +189,6 @@ MAX_AUDIO_BYTES = MAX_AUDIO_MB * 1024 * 1024
 # ========= API FALLBACK / HEALTH =========
 API_ERROR_WINDOW_SEC = 120
 API_ERROR_THRESHOLD = 6
-
-# Варианты fallback: "none" | "apify"
-ALT_PROVIDER = os.getenv("ALT_PROVIDER", "none").strip().lower()
-APIFY_TOKEN = os.getenv("APIFY_TOKEN", "").strip()
-APIFY_ACTOR = os.getenv("APIFY_ACTOR", "apilabs/tiktok-downloader").strip()
 
 # Небольшая задержка между запросами к бесплатному tikwm API — чтобы не
 # словить рейт-лимит/бан на их стороне при частых запросах.
@@ -175,31 +231,10 @@ MSG_SPAM = "🛡 <b>Слишком быстро!</b>\nПереведи дух ~{
 MSG_DL = "⏳ <b>Лимит скачиваний</b>\nПодожди ~{n} сек. — и продолжим."
 MSG_PHOTO = "📸 <b>Лимит по фото</b>\nПодожди ~{n} сек. — и продолжим."
 
-# ========= РЕФЕРАЛЬНАЯ СИСТЕМА / МАГАЗИН ПОДАРКОВ =========
-BOT_USERNAME = os.getenv("BOT_USERNAME", "tiksavesbot").strip().lstrip("@")
-REF_POINTS_PER_REFERRAL = int(os.getenv("REF_POINTS_PER_REFERRAL", "10"))
-REF_TOP_LIMIT = int(os.getenv("REF_TOP_LIMIT", "10"))
-
-# Каталог подарков: ключ, эмодзи, название, цена в баллах.
-# Выдаются вручную администрацией — тут только учёт заявок/баланса.
-GIFTS = [
-    {"key": "bear_santa",      "emoji": "🎅", "name": "Мишка-Санта",         "price": 50, "tg_id": "5956217000635139069"},
-    {"key": "tree",            "emoji": "🎄", "name": "Новогодняя ёлка",      "price": 50, "tg_id": "5922558454332916696"},
-    {"key": "bear_heart",      "emoji": "💕", "name": "Мишка с сердечком",    "price": 50, "tg_id": "5800655655995968830"},
-    {"key": "heart_love",      "emoji": "💌", "name": "Сердце I LOVE U",      "price": 50, "tg_id": "5801108895304779062"},
-    {"key": "bear_flowers",    "emoji": "🌹", "name": "Мишка с цветами",      "price": 50, "tg_id": "5866352046986232958"},
-    {"key": "bear_leprechaun", "emoji": "🍀", "name": "Мишка-Лепрекон",       "price": 50, "tg_id": "5893356958802511476"},
-    {"key": "bear_clown",      "emoji": "🤡", "name": "Мишка-Клоун",          "price": 50, "tg_id": "5935895822435615975"},
-    {"key": "bear_rabbit",     "emoji": "🐰", "name": "Мишка-Заяц",           "price": 50, "tg_id": "5969796561943660080"},
-    {"key": "bear_hammer",     "emoji": "🔨", "name": "Мишка с молотком",     "price": 50, "tg_id": "6026193266406327981"},
-    {"key": "bear_ball",       "emoji": "⚽", "name": "Мишка с мячом",        "price": 50, "tg_id": "5974210632977745012"},
-    {"key": "bear_gun",        "emoji": "🔫", "name": "Мишка с пистолетиком", "price": 50, "tg_id": "6046178578163303744"},
-]
-GIFTS_BY_KEY = {g["key"]: g for g in GIFTS}
-
-# Канал для заявок на подарки / выдачи призов реферальной системы
-# Сюда идят все запросы на покупку подарков (звёзды/билеты) на одобрение админу
-REFERRAL_LOG_CHANNEL_ID = int(os.getenv("REFERRAL_LOG_CHANNEL_ID", "-1004333103786"))
+# ========= ПОДДЕРЖКА (/support) =========
+# Сколько ждём сообщение пользователя после /support, прежде чем считать
+# заявку неактуальной.
+SUPPORT_WAIT_TTL_SEC = 600
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("tiktok_bot")

@@ -18,7 +18,7 @@ from storage import store
 from picker_state import video_extras, new_req_id, cleanup_video_extras
 from keyboards import under_video_kb
 from youtube_provider import has_audio_track
-from referral import after_download_hooks
+from download_nudge import after_download_hooks
 
 
 async def send_external_video(

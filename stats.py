@@ -378,7 +378,6 @@ def _admin_stats_text(mode: str) -> str:
             f"📱 <b>ИСТОЧНИКИ</b>\n"
             f"{_fmt_by_source(by_source)}\n\n"
             f"⭐ <b>МОНЕТИЗАЦИЯ</b>\n"
-            f"├  🎁 Приглашено в бота: <b>{store.total_referrals_count()}</b>\n"
             f"└ 💛 Донаты:\n"
             f"     ├ ⭐ Донат звёздами: <b>{stars_total}</b>\n"
             f"     └ 🪙 Донат в рублях: <b>{money_total}₽</b>\n\n"
@@ -419,9 +418,7 @@ def _admin_stats_text(mode: str) -> str:
         f"├ За период: <b>{bans_total}</b>\n"
         f"└ Активных сейчас: <b>{active_bans}</b>\n\n"
         f"⭐ <b>Звёзды (донаты)</b>\n"
-        f"└ За период: <b>{stars_total} ⭐</b>\n\n"
-        f"🎁 <b>Реферальная система</b>\n"
-        f"└ Приглашено всего: <b>{store.total_referrals_count()}</b>\n"
+        f"└ За период: <b>{stars_total} ⭐</b>\n"
     )
     if mode == "all":
         text_parts.append(
@@ -432,17 +429,6 @@ def _admin_stats_text(mode: str) -> str:
             f"🏆 <b>Топ донатеров</b>\n{fmt_top_don()}\n\n"
         )
     return "".join(text_parts)
-
-def _top_referrals_section() -> str:
-    top = store.top_referrers(3)
-    if not top:
-        return "🎁 <b>Топ рефереров</b>\n-"
-    lines = []
-    for uid, cnt in top:
-        who = store.get_user_label(uid)
-        lines.append(f"• <b>{format_user_for_log(who, uid)}</b>: 👥 <b>{cnt}</b> реф.")
-    return "🎁 <b>Топ рефереров</b>\n" + "\n".join(lines)
-
 
 def _top_text_from_totals(title: str, totals: Dict[int, Dict[str, int]]) -> str:
     def top_by(field: str) -> List[Tuple[int, int]]:
@@ -475,8 +461,7 @@ def _top_text_from_totals(title: str, totals: Dict[int, Dict[str, int]]) -> str:
         f"⭐ <b>Топ Stars</b>\n{fmt_list(top_stars, '⭐', '⭐')}\n\n"
         f"🪙 <b>Топ в рублях</b>\n{fmt_list(top_money, '🪙', '₽')}\n\n"
         f"🎬 <b>Топ видео</b>\n{fmt_list(top_video, '🎬', '🎬')}\n\n"
-        f"🖼️ <b>Топ фото</b>\n{fmt_list(top_photo, '🖼️', '🖼️')}\n\n"
-        f"{_top_referrals_section()}"
+        f"🖼️ <b>Топ фото</b>\n{fmt_list(top_photo, '🖼️', '🖼️')}"
     )
 
 def _top_text_for_mode(mode: str) -> str:
@@ -579,9 +564,6 @@ def _user_stats_text(uid: int) -> str:
         last_seen_ts = int((store.data.get("last_seen", {}) or {}).get(str(uid), 0))
         joined = format_msk(last_seen_ts) if last_seen_ts > 0 else "неизвестно"
 
-    ref_stats = store.get_ref_stats(uid)
-    invited_cnt = len(store.referrals_of(uid))
-
     return (
         "📊 <b>Твоя статистика:</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -593,9 +575,7 @@ def _user_stats_text(uid: int) -> str:
         f"├ 🖼️ Фото скачано: <b>{p_sent}</b>\n"
         f"├ 🎵 Аудио скачано: <b>{a_sent}</b>\n"
         f"└ 📝 Описаний скачано: <b>{d_sent}</b>\n\n"
-        f"{_donation_lines(uid)}\n\n"
-        f"🎁 Приглашено рефералов: <b>{invited_cnt}</b> — /ref\n"
-        f"🎟️ Баланс билетиков реферальной системы: <b>{ref_stats['ref_points']}</b>"
+        f"{_donation_lines(uid)}"
     )
 
 def _user_stats_period_text(uid: int, mode: str) -> str:
