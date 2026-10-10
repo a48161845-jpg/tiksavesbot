@@ -116,8 +116,8 @@ async def _resolve_and_download(platform: str, url: str, out_dir: Path) -> Path:
     duration = int(info.get("duration") or 0)
     if duration and duration > YOUTUBE_MAX_DURATION_SEC:
         raise RuntimeError(f"Видео длиннее {YOUTUBE_MAX_DURATION_SEC // 60} мин — не поддерживается в инлайне")
-    # В инлайне важна скорость — берём до 720p (дальше бот всё равно сожмёт под лимит).
-    path, _dl_info = await download_media(url, out_dir, quality_height=720)
+    # В инлайне важна скорость — берём до ~720p для вертикальных Shorts (height 1280) и до 1080p для горизонтальных; тяжёлое бот сожмёт под лимит.
+    path, _dl_info = await download_media(url, out_dir, quality_height=1280)
     return path
 
 
