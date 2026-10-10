@@ -26,21 +26,36 @@ class SlideshowBuildError(Exception):
     pass
 
 
+_UA_LIST = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+)
+
+
 async def _download_file(session: aiohttp.ClientSession, url: str, dest: Path) -> None:
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "*/*"}
-    try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-            if resp.status >= 400:
-                raise SlideshowBuildError(f"HTTP {resp.status} при скачивании {url}")
-            with dest.open("wb") as f:
-                async for chunk in resp.content.iter_chunked(65536):
-                    f.write(chunk)
-    except SlideshowBuildError:
-        raise
-    except Exception as e:
-        # Любая сетевая/файловая ошибка — тоже SlideshowBuildError, чтобы
-        # вызывающий код гарантированно мог её поймать.
-        raise SlideshowBuildError(f"Не удалось скачать {url}: {e.__class__.__name__}: {e}") from e
+    # tiktokcdn отдаёт 403 на запросы без Referer/с "левым" User-Agent — пробуем
+    # несколько вариантов заголовков, прежде чем сдаться.
+    last: Optional[Exception] = None
+    for ua in _UA_LIST:
+        headers = {"User-Agent": ua, "Accept": "*/*", "Referer": "https://www.tiktok.com/"}
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=25)) as resp:
+                if resp.status >= 400:
+                    last = SlideshowBuildError(f"HTTP {resp.status} при скачивании {url}")
+                    if resp.status in (401, 403, 429):
+                        continue
+                    raise last
+                with dest.open("wb") as f:
+                    async for chunk in resp.content.iter_chunked(65536):
+                        f.write(chunk)
+                return
+        except SlideshowBuildError:
+            raise
+        except Exception as e:
+            last = SlideshowBuildError(f"Не удалось скачать {url}: {e.__class__.__name__}: {e}")
+            last.__cause__ = e
+            continue
+    raise last or SlideshowBuildError(f"Не удалось скачать {url}")
 
 
 def _build_sync(photo_paths: List[Path], audio_path: Optional[Path], out_path: Path) -> None:

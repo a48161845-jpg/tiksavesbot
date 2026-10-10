@@ -32,7 +32,7 @@ RUN git clone --depth=1 --recursive https://github.com/tdlib/telegram-bot-api.gi
 
 RUN mkdir -p telegram-bot-api/build && cd telegram-bot-api/build \
     && CXXFLAGS="-O2" CFLAGS="-O2" cmake -DCMAKE_BUILD_TYPE=Release .. \
-    && cmake --build . --target install -j"$(nproc)"
+    && cmake --build . --target install -j2
 # Бинарник после install лежит в /usr/local/bin/telegram-bot-api
 
 

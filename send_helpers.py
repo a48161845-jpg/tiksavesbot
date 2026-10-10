@@ -21,10 +21,14 @@ from config import (
     MAX_VIDEO_BYTES,
     MAX_AUDIO_BYTES,
     DESCRIPTION_TG_LIMIT,
+    COMPRESS_OVER_LIMIT,
+    DOWNLOAD_HARD_CAP_BYTES,
 )
 from helpers import html_escape, code, clamp_reason, exc_type_name
 from storage import store
 from providers import BaseProvider
+from video_compress import compress_to_limit, CompressError
+from youtube_provider import ffmpeg_available
 from logging_channel import log_event, format_user_for_log
 
 
@@ -58,6 +62,37 @@ async def send_photos(message: Message, urls: List[str], caption_html: str = CAP
     return len(urls)
 
 
+# Ошибки Telegram, при которых отправка видео по прямой ссылке не удалась, но
+# скачать файл самим и залить его файлом — может получиться.
+_URL_SEND_FAIL_MARKERS = (
+    "failed to get http url content",
+    "wrong type of the web page content",
+    "wrong file identifier",
+    "http url specified",
+    "wrong remote file identifier",
+    "file is too big",
+    "request entity too large",
+)
+
+
+async def fit_video_to_limit(path: Path) -> Path:
+    """
+    Если файл тяжелее лимита отправки (49 МБ на облачном Bot API) — сжимает
+    его через ffmpeg. Возвращает путь к файлу, который можно отправлять
+    (исходный или новый _c.mp4; вызывающий код сам удаляет оба). Если сжать
+    нельзя — бросает RuntimeError("File too large ...").
+    """
+    size = path.stat().st_size
+    if size <= MAX_VIDEO_BYTES:
+        return path
+    if not (COMPRESS_OVER_LIMIT and ffmpeg_available()):
+        raise RuntimeError(f"File too large (> {MAX_VIDEO_BYTES} bytes)")
+    try:
+        return await compress_to_limit(path, MAX_VIDEO_BYTES)
+    except CompressError as e:
+        raise RuntimeError(f"File too large (> {MAX_VIDEO_BYTES} bytes): {e}") from e
+
+
 async def send_video_smart(
     message: Message,
     provider: BaseProvider,
@@ -72,10 +107,11 @@ async def send_video_smart(
         return
     except TelegramBadRequest as e:
         low = str(e).lower()
-        if "failed to get http url content" not in low:
+        if not any(m in low for m in _URL_SEND_FAIL_MARKERS):
             raise
 
         tmp = Path(f"tmp_video_{message.from_user.id}_{int(time.time())}.mp4")
+        sendable: Optional[Path] = None
         progress_msg: Optional[Message] = status_msg
         try:
             if progress_msg:
@@ -90,14 +126,24 @@ async def send_video_smart(
                     parse_mode="HTML",
                 )
 
+            # Качаем с запасом по размеру: если файл тяжелее лимита отправки —
+            # ниже его сожмёт ffmpeg, а не откажет пользователю.
+            can_compress = COMPRESS_OVER_LIMIT and ffmpeg_available()
             await provider.download_to_file(
                 video_url,
                 tmp,
-                MAX_VIDEO_BYTES,
+                max(MAX_VIDEO_BYTES, DOWNLOAD_HARD_CAP_BYTES) if can_compress else MAX_VIDEO_BYTES,
                 stage="video",
                 cancel_cb=cancel_cb,
             )
-            await message.answer_video(FSInputFile(tmp), caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+            if tmp.stat().st_size > MAX_VIDEO_BYTES and progress_msg:
+                with contextlib.suppress(Exception):
+                    await progress_msg.edit_text(
+                        "🗜 <b>Видео тяжёлое — сжимаю, чтобы влезло в Telegram…</b>",
+                        parse_mode="HTML",
+                    )
+            sendable = await fit_video_to_limit(tmp)
+            await message.answer_video(FSInputFile(sendable), caption=caption, parse_mode="HTML", reply_markup=reply_markup)
         except RuntimeError as e:
             if "file too large" in str(e).lower():
                 with contextlib.suppress(Exception):
@@ -108,6 +154,9 @@ async def send_video_smart(
         finally:
             with contextlib.suppress(Exception):
                 tmp.unlink(missing_ok=True)
+            if sendable and sendable != tmp:
+                with contextlib.suppress(Exception):
+                    sendable.unlink(missing_ok=True)
 
 
 def _audio_user_id(message: Message, uid: Optional[int]) -> int:

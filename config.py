@@ -100,7 +100,16 @@ LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1003763229922"))
 # запросы (каждый раз качает заново).
 INLINE_CACHE_CHANNEL_ID = int(os.getenv("INLINE_CACHE_CHANNEL_ID", "0"))
 
-TIKTOK_RE = re.compile(r"(https?://)?(www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)/", re.I)
+# Любые поддомены (www, m, vm, vt, lite, ...) + новые короткие домены TikTok
+# (напр. https://www.tt.site/t/XXXX/). Раньше regex знал только
+# tiktok.com / vm. / vt., из-за чего новые форматы ссылок просто игнорировались.
+TIKTOK_DOMAINS = r"(?:tiktok\.com|tiktokv\.com|tiktokv\.us|tiktok\.us|tt\.site)"
+TIKTOK_RE = re.compile(r"(?<![\w.@/=-])(?:https?://)?(?:[a-z0-9-]+\.)*" + TIKTOK_DOMAINS + r"(?=[/?#]|$|\s)", re.I)
+# Короткие/редиректные ссылки: их надо сначала раскрыть в полный URL видео.
+TIKTOK_SHORT_RE = re.compile(
+    r"^https?://(?:(?:vm|vt|vo|m|lite)\.tiktok\.com/|(?:[a-z0-9-]+\.)?tiktok\.com/t/|(?:[a-z0-9-]+\.)?tt\.site/)",
+    re.I,
+)
 
 # ========= YOUTUBE =========
 YOUTUBE_RE = re.compile(
@@ -124,7 +133,7 @@ YOUTUBE_MAX_HEIGHT = int(os.getenv("YOUTUBE_MAX_HEIGHT", "1920"))
 
 # Telegram (обычный облачный Bot API) не даёт боту отправлять файлы больше
 # 50 МБ — берём с небольшим запасом снизу.
-YOUTUBE_MAX_VIDEO_MB = int(os.getenv("YOUTUBE_MAX_VIDEO_MB", "2000" if LOCAL_BOT_API_URL else "49"))
+YOUTUBE_MAX_VIDEO_MB = int(os.getenv("YOUTUBE_MAX_VIDEO_MB", "1990" if LOCAL_BOT_API_URL else "49"))
 YOUTUBE_MAX_VIDEO_BYTES = YOUTUBE_MAX_VIDEO_MB * 1024 * 1024
 
 MEDIA_GROUP_LIMIT = 10
@@ -155,20 +164,22 @@ WAITING_STARS_TTL_SEC = 120
 # ========= GLOBAL LIMITS =========
 # Сколько скачиваний могут обрабатываться параллельно (а не одно за другим).
 # Раньше было = 1 (строгая очередь "один за раз, ~раз в минуту").
-GLOBAL_CONCURRENCY = int(os.getenv("GLOBAL_CONCURRENCY", "8"))
+GLOBAL_CONCURRENCY = int(os.getenv("GLOBAL_CONCURRENCY", "12"))
 
 # ========= SPAM LIMIT (тихий cooldown, без страйков) =========
-EVENT_WINDOW_SEC = 15
-EVENT_MAX = 8
-SPAM_COOLDOWN_SEC = 60
+# Лимиты сделаны мягкими: обычный человек, кидающий пачку ссылок подряд,
+# в них не упирается. Всё переопределяется через переменные окружения.
+EVENT_WINDOW_SEC = int(os.getenv("EVENT_WINDOW_SEC", "15"))
+EVENT_MAX = int(os.getenv("EVENT_MAX", "30"))
+SPAM_COOLDOWN_SEC = int(os.getenv("SPAM_COOLDOWN_SEC", "15"))
 
 # ========= DOWNLOAD LIMIT =========
-DL_WINDOW_SEC = 60
-DL_MAX_ACTIONS = 6
+DL_WINDOW_SEC = int(os.getenv("DL_WINDOW_SEC", "60"))
+DL_MAX_ACTIONS = int(os.getenv("DL_MAX_ACTIONS", "25"))
 
 # ========= PHOTO VOLUME LIMIT =========
-PHOTO_WINDOW_SEC = 60
-PHOTO_LIMIT_PER_MIN = 120
+PHOTO_WINDOW_SEC = int(os.getenv("PHOTO_WINDOW_SEC", "60"))
+PHOTO_LIMIT_PER_MIN = int(os.getenv("PHOTO_LIMIT_PER_MIN", "400"))
 
 # ========= AUTOSAVE =========
 AUTO_SAVE_INTERVAL_SEC = 5  # автосинхронизация раз в N сек
@@ -181,10 +192,43 @@ DESCRIPTION_TG_LIMIT = 3500
 # ========= VIDEO/AUDIO FALLBACK DOWNLOAD =========
 # Telegram (обычный облачный Bot API) не даёт боту отправлять файлы больше
 # 50 МБ — это ограничение платформы, не бота.
-MAX_VIDEO_MB = int(os.getenv("MAX_VIDEO_MB", "2000" if LOCAL_BOT_API_URL else "49"))
+MAX_VIDEO_MB = int(os.getenv("MAX_VIDEO_MB", "1990" if LOCAL_BOT_API_URL else "49"))
 MAX_VIDEO_BYTES = MAX_VIDEO_MB * 1024 * 1024
+# Если облачный Bot API (лимит 50 МБ) и файл тяжелее лимита — вместо отказа
+# сжимаем видео через ffmpeg до нужного размера. Скачиваем при этом файлы
+# до DOWNLOAD_HARD_CAP_MB (больше — уже отказ, чтобы не забить диск/время).
+COMPRESS_OVER_LIMIT = os.getenv("COMPRESS_OVER_LIMIT", "1").strip() == "1"
+DOWNLOAD_HARD_CAP_MB = int(os.getenv("DOWNLOAD_HARD_CAP_MB", "600"))
+DOWNLOAD_HARD_CAP_BYTES = DOWNLOAD_HARD_CAP_MB * 1024 * 1024
+
+# Куки для yt-dlp (YouTube "Sign in to confirm you're not a bot", Instagram,
+# TikTok 18+). Либо путь к cookies.txt (Netscape), либо содержимое файла в
+# base64 в переменной YTDLP_COOKIES_B64 (удобно для Render — без файлов).
+YTDLP_COOKIES_FILE = os.getenv("YTDLP_COOKIES_FILE", "").strip()
+YTDLP_COOKIES_B64 = os.getenv("YTDLP_COOKIES_B64", "").strip()
+# Прокси для yt-dlp (http://user:pass@host:port или socks5://...). Бот-проверка YouTube
+# завязана на IP: через прокси с "чистым" IP cookies не нужны.
+YTDLP_PROXY = os.getenv("YTDLP_PROXY", "").strip()
+
 MAX_AUDIO_MB = int(os.getenv("MAX_AUDIO_MB", "25"))
 MAX_AUDIO_BYTES = MAX_AUDIO_MB * 1024 * 1024
+
+def downgrade_to_cloud_limits() -> None:
+    """Local Bot API Server не поднялся — возвращаемся на лимит облачного API (49 МБ),
+    в том числе в уже импортированных модулях (они копируют константы при import)."""
+    import sys
+    global LOCAL_BOT_API_URL, YOUTUBE_MAX_VIDEO_MB, YOUTUBE_MAX_VIDEO_BYTES, MAX_VIDEO_MB, MAX_VIDEO_BYTES
+    LOCAL_BOT_API_URL = ""
+    YOUTUBE_MAX_VIDEO_MB = MAX_VIDEO_MB = 49
+    YOUTUBE_MAX_VIDEO_BYTES = MAX_VIDEO_BYTES = 49 * 1024 * 1024
+    for mod in list(sys.modules.values()):
+        if mod is None or getattr(mod, "__name__", "") == __name__:
+            continue
+        for name, val in (("MAX_VIDEO_MB", 49), ("MAX_VIDEO_BYTES", 49 * 1024 * 1024),
+                          ("YOUTUBE_MAX_VIDEO_MB", 49), ("YOUTUBE_MAX_VIDEO_BYTES", 49 * 1024 * 1024)):
+            if name in getattr(mod, "__dict__", {}):
+                setattr(mod, name, val)
+
 
 # ========= API FALLBACK / HEALTH =========
 API_ERROR_WINDOW_SEC = 120

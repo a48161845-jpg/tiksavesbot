@@ -53,3 +53,12 @@ tiksaves_bot/
 - Данные хранятся в `data.json` рядом с `bot.py` (создаётся автоматически).
 - Для резервного провайдера скачивания установи `ALT_PROVIDER=apify` и `APIFY_TOKEN`
   в `.env` — но `ApifyProvider.get_media` потребует доработки (маппинг полей актора).
+
+## Что изменилось (обновление)
+
+- **Лимиты смягчены**: 25 скачиваний/мин (было 6), 30 событий/15 с до кулдауна (было 8), кулдаун 15 с (был 60), фото 400/мин. Всё настраивается через `.env` (см. `.env.example`).
+- **Новые форматы ссылок TikTok**: `tt.site/t/...`, `tiktok.com/t/...`, любые поддомены `*.tiktok.com`, `tiktokv.com`. Короткие ссылки раскрываются до полного URL перед скачиванием; при `Url parsing is failed` пробуются запасные формы URL.
+- **Файлы > 50 МБ**: задай `API_ID` и `API_HASH` — Dockerfile поднимет Local Bot API (до 2 ГБ). Если сервер не поднялся или переменных нет — бот не отказывает, а **сжимает видео через ffmpeg** до 49 МБ.
+- Pinterest: исправлена ошибка `Conflicting range`.
+- TikTok-слайдшоу: исправлен HTTP 403 при скачивании фото (Referer + повтор с другим User-Agent).
+- yt-dlp: поддержка cookies (`YTDLP_COOKIES_B64` / `YTDLP_COOKIES_FILE`) — лечит «Sign in to confirm you're not a bot» на YouTube и закрытые Instagram-посты.

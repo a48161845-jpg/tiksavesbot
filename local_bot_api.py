@@ -8,6 +8,8 @@
 """
 import asyncio
 import contextlib
+
+import aiohttp
 from pathlib import Path
 from typing import Optional
 
@@ -81,3 +83,38 @@ async def stop_local_bot_api(proc: Optional[asyncio.subprocess.Process]) -> None
     with contextlib.suppress(Exception):
         proc.terminate()
         await asyncio.wait_for(proc.wait(), timeout=10)
+
+
+async def ensure_local_login(base_url: str, token: str) -> bool:
+    """
+    Бота нужно один раз "разлогинить" на облачном api.telegram.org, прежде чем
+    он заработает на Local Bot API Server — иначе локальный сервер отвечает
+    ошибками (401/409/429) и бот молча остаётся на лимите 50 МБ или падает.
+    Делаем так: пробуем getMe на локальном сервере; если не вышло — вызываем
+    logOut в облаке и повторяем. Возвращает True, если локальный сервер отвечает.
+    """
+    async def _get_me() -> bool:
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+                async with s.get(f"{base_url}/bot{token}/getMe") as r:
+                    js = await r.json(content_type=None)
+                    return bool(js.get("ok"))
+        except Exception:
+            return False
+
+    if await _get_me():
+        return True
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+            async with s.post(f"https://api.telegram.org/bot{token}/logOut") as r:
+                js = await r.json(content_type=None)
+                print(f"ℹ️ logOut с облачного Bot API: {js}")
+    except Exception as e:
+        print(f"⚠️ logOut с облачного Bot API не удался: {e.__class__.__name__}: {e}")
+
+    for _ in range(6):
+        await asyncio.sleep(3)
+        if await _get_me():
+            return True
+    return False

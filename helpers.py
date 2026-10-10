@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, List
 import aiohttp
 from datetime import datetime, timezone, timedelta
 
-from config import MSK_TZ, TIKTOK_RE, YOUTUBE_RE, INSTAGRAM_RE, VK_RE, PINTEREST_RE, ADMINS
+from config import MSK_TZ, TIKTOK_RE, TIKTOK_SHORT_RE, YOUTUBE_RE, INSTAGRAM_RE, VK_RE, PINTEREST_RE, ADMINS
 
 # ================== HTML FORMATTING ==================
 def html_escape(s: str) -> str:
@@ -167,10 +167,11 @@ def is_tiktok(text: str) -> bool:
 def extract_tiktok_url(text: str) -> Optional[str]:
     if not text:
         return None
-    m = re.search(r"https?://\S+", text)
-    if m:
+    # Берём первую TikTok-ссылку из текста, даже если перед ней есть другие ссылки.
+    for m in re.finditer(r"https?://\S+", text):
         url = m.group(0)
-        return url if is_tiktok(url) else None
+        if is_tiktok(url):
+            return url
     # maybe without scheme
     m2 = TIKTOK_RE.search(text)
     if m2:
@@ -190,10 +191,19 @@ def normalize_tiktok_url(url: str) -> str:
         u = u[:-1]
     if not u.startswith("http"):
         u = "https://" + u
-    if "tiktok.com" in u:
-        base = u.split("?", 1)[0]
-        return base
+    if TIKTOK_RE.search(u):
+        # трекинговые параметры (?_r=1&u_code=...) tikwm/yt-dlp только мешают
+        u = u.split("?", 1)[0].split("#", 1)[0]
     return u
+
+_TT_VIDEO_ID_RE = re.compile(r"/(?:video|photo|v)/(\d{8,})")
+
+def extract_tiktok_video_id(url: str) -> Optional[str]:
+    m = _TT_VIDEO_ID_RE.search(url or "")
+    return m.group(1) if m else None
+
+def is_tiktok_short_url(url: str) -> bool:
+    return bool(TIKTOK_SHORT_RE.match(url or ""))
 
 def is_youtube(text: str) -> bool:
     return bool(YOUTUBE_RE.search(text or ""))
@@ -258,10 +268,27 @@ def extract_other_source_url(text: str) -> Optional[str]:
     return None
 
 async def resolve_tiktok_redirect(session: aiohttp.ClientSession, url: str) -> str:
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "*/*"}
+    """Раскрывает короткую ссылку (vt./vm./tiktok.com/t/ /tt.site/t/) в полный URL видео."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
+                      "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "Accept": "*/*",
+    }
     try:
-        async with session.get(url, headers=headers, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-            return str(resp.url)
+        async with session.get(url, headers=headers, allow_redirects=True,
+                               timeout=aiohttp.ClientTimeout(total=12)) as resp:
+            final = str(resp.url)
+            if extract_tiktok_video_id(final):
+                return final
+            # некоторые короткие домены отдают HTML с canonical / og:url вместо 30x
+            try:
+                body = (await resp.content.read(200_000)).decode("utf-8", "ignore")
+            except Exception:
+                body = ""
+            m = re.search(r"https?://(?:www\.)?tiktok\.com/@[^\"'\s<>?]+/(?:video|photo)/\d+", body)
+            if m:
+                return m.group(0)
+            return final
     except Exception:
         return url
 

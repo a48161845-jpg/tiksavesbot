@@ -18,7 +18,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yt_dlp
 
-from config import YOUTUBE_MAX_HEIGHT, YOUTUBE_CONCURRENT_FRAGMENTS, YOUTUBE_HTTP_CHUNK_MB
+from config import (
+    YOUTUBE_MAX_HEIGHT,
+    YOUTUBE_CONCURRENT_FRAGMENTS,
+    YOUTUBE_HTTP_CHUNK_MB,
+    YTDLP_COOKIES_FILE,
+    YTDLP_COOKIES_B64,
+    YTDLP_PROXY,
+    DOWNLOAD_HARD_CAP_BYTES,
+)
+from cobalt_client import cobalt_enabled, cobalt_download
 
 
 class YoutubeTooLargeError(Exception):
@@ -71,6 +80,50 @@ def ffmpeg_available() -> bool:
 # полный набор качеств.
 _YT_PLAYER_CLIENTS = ["android", "ios", "tv_embedded", "mweb", "web"]
 
+# Если YouTube ответил "Sign in to confirm you're not a bot" — пробуем другие
+# наборы клиентов БЕЗ cookies. android_vr / tv_simply / web_embedded обычно не
+# требуют ни входа, ни PO-токена. Применяется только к YouTube.
+_YT_CLIENT_CHAINS = [
+    _YT_PLAYER_CLIENTS,
+    ["android_vr", "tv_simply", "web_embedded"],
+    ["tv", "web_safari", "mweb"],
+]
+
+_AUTH_WALL_MARKERS = (
+    "sign in to confirm",
+    "not a bot",
+    "use --cookies",
+    "log in for access",
+    "login required",
+    "empty media response",
+    "this video is only available for registered users",
+    "confirm your age",
+)
+
+
+def is_auth_wall_error(e: BaseException) -> bool:
+    low = str(e).lower()
+    return any(m in low for m in _AUTH_WALL_MARKERS)
+
+
+def _is_youtube_url(url: str) -> bool:
+    low = (url or "").lower()
+    return "youtube.com" in low or "youtu.be" in low
+
+
+def _run_chains(url: str, fn):
+    """fn(clients) -> result. Для YouTube перебирает наборы клиентов при стене авторизации."""
+    chains = _YT_CLIENT_CHAINS if _is_youtube_url(url) else [None]
+    last: Optional[BaseException] = None
+    for clients in chains:
+        try:
+            return fn(clients)
+        except Exception as e:
+            last = e
+            if not is_auth_wall_error(e):
+                raise
+    raise last  # type: ignore[misc]
+
 # Предпочитаем h264/mp4 — Telegram воспроизводит его без перекодирования на
 # любом устройстве, к тому же декодируется быстрее vp9/av1 (важно, когда
 # сервер сам собирает превью/отправляет файл). При этом не жертвуем
@@ -122,7 +175,26 @@ class _DiagnosticLogger:
         self._check(msg)
 
 
-def _base_opts(extra: Optional[Dict[str, Any]] = None, logger: Optional[_DiagnosticLogger] = None) -> Dict[str, Any]:
+def _resolve_cookies_file() -> Optional[str]:
+    """Путь к cookies.txt: из YTDLP_COOKIES_FILE либо из YTDLP_COOKIES_B64 (декодируем во временный файл)."""
+    if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
+        return YTDLP_COOKIES_FILE
+    if YTDLP_COOKIES_B64:
+        try:
+            import base64, tempfile
+            target = Path(tempfile.gettempdir()) / "ytdlp_cookies.txt"
+            target.write_bytes(base64.b64decode(YTDLP_COOKIES_B64))
+            return str(target)
+        except Exception:
+            return None
+    return None
+
+
+_COOKIES_PATH: Optional[str] = _resolve_cookies_file()
+
+
+def _base_opts(extra: Optional[Dict[str, Any]] = None, logger: Optional[_DiagnosticLogger] = None,
+               url: str = "", clients: Optional[List[str]] = None) -> Dict[str, Any]:
     opts: Dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
@@ -132,7 +204,7 @@ def _base_opts(extra: Optional[Dict[str, Any]] = None, logger: Optional[_Diagnos
         "retries": 5,
         "fragment_retries": 10,
         "skip_unavailable_fragments": False,
-        "extractor_args": {"youtube": {"player_client": _YT_PLAYER_CLIENTS}},
+        "extractor_args": {"youtube": {"player_client": list(clients or _YT_PLAYER_CLIENTS)}},
         "format_sort": _FORMAT_SORT,
         # Параллельные фрагменты — основное ускорение для DASH/HLS (YouTube,
         # часто и VK). Без этого фрагменты качаются строго по одному.
@@ -140,6 +212,15 @@ def _base_opts(extra: Optional[Dict[str, Any]] = None, logger: Optional[_Diagnos
         # Параллельные HTTP Range-запросы для обычных (progressive) ссылок.
         "http_chunk_size": max(1, YOUTUBE_HTTP_CHUNK_MB) * 1024 * 1024,
     }
+    if _COOKIES_PATH:
+        opts["cookiefile"] = _COOKIES_PATH
+    if YTDLP_PROXY:
+        opts["proxy"] = YTDLP_PROXY
+    low_url = (url or "").lower()
+    if "pinterest" in low_url or "pin.it" in low_url:
+        # Pinterest отдаёт ошибку "Conflicting range" на чанковых Range-запросах —
+        # качаем одним потоком.
+        opts.pop("http_chunk_size", None)
     if logger is not None:
         # Свой логгер полностью заменяет вывод yt-dlp — quiet/no_warnings
         # тут просто означают "не пиши сама, зови мой логгер", предупреждения
@@ -150,9 +231,9 @@ def _base_opts(extra: Optional[Dict[str, Any]] = None, logger: Optional[_Diagnos
     return opts
 
 
-def _probe_sync(url: str) -> Dict[str, Any]:
+def _probe_once(url: str, clients: Optional[List[str]] = None) -> Dict[str, Any]:
     logger = _DiagnosticLogger()
-    opts = _base_opts({"skip_download": True}, logger=logger)
+    opts = _base_opts({"skip_download": True}, logger=logger, url=url, clients=clients)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
         if info is None:
@@ -162,9 +243,21 @@ def _probe_sync(url: str) -> Dict[str, Any]:
         return info
 
 
+def _probe_sync(url: str) -> Dict[str, Any]:
+    return _run_chains(url, lambda clients: _probe_once(url, clients))
+
+
 async def probe_youtube(url: str) -> Dict[str, Any]:
     """Узнаёт длительность/название/доступные качества БЕЗ скачивания."""
-    return await asyncio.to_thread(_probe_sync, url)
+    try:
+        return await asyncio.to_thread(_probe_sync, url)
+    except Exception as e:
+        # yt-dlp упёрся в "войдите/вы не бот" — если настроен cobalt, пропускаем
+        # пробу: качество выберется "лучшее", а скачивание пойдёт через cobalt.
+        if is_auth_wall_error(e) and cobalt_enabled():
+            return {"_cobalt": True, "formats": [], "duration": 0, "title": "", "webpage_url": url,
+                    "acodec": "unknown"}
+        raise
 
 
 def list_qualities(info: Dict[str, Any], max_options: int = 6) -> List[Dict[str, Any]]:
@@ -260,7 +353,7 @@ async def download_youtube(
     """
     info_holder: Dict[str, Any] = {}
 
-    def _run() -> Path:
+    def _run(clients: Optional[List[str]] = None) -> Path:
         out_template = str(out_dir / "%(id)s.%(ext)s")
 
         effective_height = quality_height or max_height
@@ -270,7 +363,9 @@ async def download_youtube(
             {
                 "format": fmt,
                 "outtmpl": out_template,
-            }
+            },
+            url=url,
+            clients=clients,
         )
         if _FFMPEG_PATH:
             opts["merge_output_format"] = "mp4"
@@ -289,7 +384,14 @@ async def download_youtube(
                 raise RuntimeError(f"yt-dlp: итоговый файл не найден ({filename})")
             return p
 
-    path = await asyncio.to_thread(_run)
+    try:
+        path = await asyncio.to_thread(lambda: _run_chains(url, _run))
+    except Exception as e:
+        if is_auth_wall_error(e) and cobalt_enabled():
+            path = await cobalt_download(url, out_dir, height=quality_height, max_bytes=DOWNLOAD_HARD_CAP_BYTES)
+            info_holder.update({"webpage_url": url, "acodec": "unknown"})
+        else:
+            raise
     return path, info_holder
 
 
@@ -316,13 +418,15 @@ async def download_audio_only(url: str, out_dir: Path) -> Path:
     этого звук иногда не скачивался/приходил битым. yt-dlp сам знает, что
     нужно каждой площадке, поэтому эта дорожка надёжнее.
     """
-    def _run() -> Path:
+    def _run(clients: Optional[List[str]] = None) -> Path:
         out_template = str(out_dir / "%(id)s.audio.%(ext)s")
         opts = _base_opts(
             {
                 "format": "bestaudio/best",
                 "outtmpl": out_template,
-            }
+            },
+            url=url,
+            clients=clients,
         )
         if _FFMPEG_PATH:
             opts["ffmpeg_location"] = _FFMPEG_PATH
@@ -343,7 +447,12 @@ async def download_audio_only(url: str, out_dir: Path) -> Path:
                 return p
             raise RuntimeError(f"yt-dlp: аудиофайл не найден ({filename})")
 
-    return await asyncio.to_thread(_run)
+    try:
+        return await asyncio.to_thread(lambda: _run_chains(url, _run))
+    except Exception as e:
+        if is_auth_wall_error(e) and cobalt_enabled():
+            return await cobalt_download(url, out_dir, audio_only=True, max_bytes=DOWNLOAD_HARD_CAP_BYTES)
+        raise
 
 
 # Эти функции на самом деле не привязаны к YouTube — просто вызывают

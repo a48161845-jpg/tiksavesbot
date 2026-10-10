@@ -21,7 +21,7 @@ from config import (
     API_ERROR_WINDOW_SEC,
     API_ERROR_THRESHOLD,
 )
-from helpers import html_escape, code, clamp_reason, ms_since, exc_type_name, resolve_tiktok_redirect, normalize_tiktok_url, normalize_description as _normalize_description
+from helpers import html_escape, code, clamp_reason, ms_since, exc_type_name, resolve_tiktok_redirect, normalize_tiktok_url, is_tiktok_short_url, extract_tiktok_video_id, normalize_description as _normalize_description
 from storage import store
 from logging_channel import log_event
 
@@ -180,6 +180,17 @@ class TikWMClient(_DlErrMixin, BaseProvider):
 
         return MediaInfo(video=video, photos=photos, music=music, description=description)
 
+    async def _get_media_once(self, url: str, headers: Dict[str, str]) -> MediaInfo:
+        await self._respect_cooldown()
+        async with self.session.post(API_URL, data={"url": url, "hd": 1}, headers=headers) as resp:
+            raw = await resp.read()
+            if not raw:
+                raise RuntimeError("Empty response body from API")
+            js = json.loads(raw.decode("utf-8", "ignore"))
+        if js.get("code") != 0 or "data" not in js:
+            raise RuntimeError(f"API error: {js}")
+        return self._media_from_data(js["data"])
+
     async def get_media(self, url: str) -> MediaInfo:
         headers = {
             "User-Agent": "Mozilla/5.0",
@@ -188,31 +199,36 @@ class TikWMClient(_DlErrMixin, BaseProvider):
             "Connection": "keep-alive",
         }
 
+        # Запасные формы той же ссылки на случай "Url parsing is failed":
+        # tikwm иногда не переваривает одну форму URL, но принимает другую.
+        candidates = [url]
+        vid = extract_tiktok_video_id(url)
+        if vid:
+            for alt in (f"https://m.tiktok.com/v/{vid}.html", f"https://www.tiktok.com/@/video/{vid}"):
+                if alt not in candidates:
+                    candidates.append(alt)
+
         last_err: Optional[Exception] = None
-        for attempt in range(1, 4):
-            t0 = time.perf_counter()
-            try:
-                await self._respect_cooldown()
-                async with self.session.post(API_URL, data={"url": url}, headers=headers) as resp:
-                    raw = await resp.read()
-                    if not raw:
-                        raise RuntimeError("Empty response body from API")
-                    js = json.loads(raw.decode("utf-8", "ignore"))
-
-                if js.get("code") != 0 or "data" not in js:
-                    raise RuntimeError(f"API error: {js}")
-
-                return self._media_from_data(js["data"])
-
-            except (ClientPayloadError, aiohttp.ClientConnectionError, aiohttp.ServerDisconnectedError,
-                    asyncio.TimeoutError, aiohttp.ClientOSError, aiohttp.ClientResponseError) as e:
-                last_err = e
-                await self._log_dlerr("api", url, attempt, ms_since(t0), e)
-                await asyncio.sleep(0.6 * attempt)
-                continue
-            except Exception as e:
-                await self._log_dlerr("api", url, attempt, ms_since(t0), e)
-                raise
+        for cand_i, cand in enumerate(candidates):
+            for attempt in range(1, 4):
+                t0 = time.perf_counter()
+                try:
+                    return await self._get_media_once(cand, headers)
+                except (ClientPayloadError, aiohttp.ClientConnectionError, aiohttp.ServerDisconnectedError,
+                        asyncio.TimeoutError, aiohttp.ClientOSError, aiohttp.ClientResponseError) as e:
+                    last_err = e
+                    await self._log_dlerr("api", cand, attempt, ms_since(t0), e)
+                    await asyncio.sleep(0.6 * attempt)
+                    continue
+                except Exception as e:
+                    last_err = e
+                    low = str(e).lower()
+                    # Парсинг URL — пробуем другую форму ссылки; остальное (приватное
+                    # видео и т.п.) повторять бессмысленно.
+                    if "url parsing" in low and cand_i < len(candidates) - 1:
+                        break
+                    await self._log_dlerr("api", cand, attempt, ms_since(t0), e)
+                    raise
 
         raise RuntimeError(f"TikWM fetch failed after retries: {last_err}") from last_err
 
@@ -342,6 +358,17 @@ class ProviderSwitcher:
         order = self._order()
         last_err: Optional[Exception] = None
         tried: List[str] = []
+
+        # Короткие ссылки (vt./vm./tiktok.com/t/ и новый tt.site/t/) сначала
+        # раскрываем в полный URL видео — tikwm их часто не понимает.
+        if is_tiktok_short_url(url):
+            sess = getattr(order[0], "session", None)
+            if sess:
+                with contextlib.suppress(Exception):
+                    resolved = normalize_tiktok_url(await resolve_tiktok_redirect(sess, url))
+                    if resolved and extract_tiktok_video_id(resolved):
+                        url = resolved
+                        raw_url = None
 
         for i, provider in enumerate(order):
             try:

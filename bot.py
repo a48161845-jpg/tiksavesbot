@@ -14,6 +14,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 
+import config as _config
 from config import BOT_TOKEN, GLOBAL_CONCURRENCY, ADMINS, LOCAL_BOT_API_URL, LOCAL_BOT_API_IS_LOCAL
 from helpers import now_msk_str, html_escape
 from storage import store, init_db, close_db
@@ -49,6 +50,25 @@ async def main():
     #    дальше на обычном облачном Bot API.
     _local_bot_api_proc = await start_local_bot_api()
 
+    # Если локальный сервер должен был быть, но на порту его нет (не собрался
+    # бинарник / неверные API_ID/API_HASH) — не ломаем бота целиком, а
+    # возвращаемся на облачный Bot API с лимитом 49 МБ (+ авто-сжатие видео).
+    local_api_ok = bool(_config.LOCAL_BOT_API_URL)
+    if local_api_ok:
+        from urllib.parse import urlparse
+        from local_bot_api import _port_open
+        _u = urlparse(_config.LOCAL_BOT_API_URL)
+        if _u.hostname and _u.port and not await _port_open(_u.hostname, _u.port):
+            print("⚠️ Local Bot API Server недоступен — работаю через облачный Bot API (лимит 49 МБ, большие видео сжимаются).")
+            _config.downgrade_to_cloud_limits()
+            local_api_ok = False
+        else:
+            from local_bot_api import ensure_local_login
+            if not await ensure_local_login(_config.LOCAL_BOT_API_URL, BOT_TOKEN):
+                print("⚠️ Local Bot API Server не принял бота (проверь API_ID/API_HASH) — работаю через облачный Bot API.")
+                _config.downgrade_to_cloud_limits()
+                local_api_ok = False
+
     # Скачивание видео с источника (tikwm/yt-dlp) может занимать долго для
     # тяжёлых файлов (до 2 ГБ) — общего total-лимита нет, только лимиты на
     # установление соединения и на "тишину" в потоке (если сервер перестал
@@ -61,9 +81,12 @@ async def main():
         # Local Bot API Server (только там снимается лимит в 50 МБ на
         # отправку файлов, до 2000 МБ). Подробности — в README.
         bot_session = None
-        if LOCAL_BOT_API_URL:
+        if local_api_ok:
             api_server = TelegramAPIServer.from_base(LOCAL_BOT_API_URL, is_local=LOCAL_BOT_API_IS_LOCAL)
-            bot_session = AiohttpSession(api=api_server)
+            # Большие файлы (до 2 ГБ) заливаются долго: локальный сервер отвечает только
+            # когда файл полностью ушёл в Telegram. Дефолтные 60 сек клиента обрывали
+            # такую отправку — отсюда "2 ГБ не работает".
+            bot_session = AiohttpSession(api=api_server, timeout=7200)
 
         bot = Bot(
             BOT_TOKEN,
@@ -91,7 +114,7 @@ async def main():
             bans_active = len(store.list_bans())
             admins_total = len(ADMINS) + len(store.get_extra_admins())
             provider_line = " + ".join(provider_names)
-            api_mode_line = f"🌐 Bot API: <b>{'локальный сервер' if LOCAL_BOT_API_URL else 'облачный (лимит 50 МБ)'}</b>"
+            api_mode_line = f"🌐 Bot API: <b>{'локальный сервер (до 2 ГБ)' if local_api_ok else 'облачный (лимит 50 МБ, большие видео авто-сжимаются)'}</b>"
             ffmpeg_line = (
                 "🎞️ ffmpeg: <b>найден</b> — доступна склейка видео+аудио (качество выше ~720p работает)"
                 if ffmpeg_available()
