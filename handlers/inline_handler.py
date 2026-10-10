@@ -37,7 +37,8 @@ from aiogram.types import (
 
 from globals_state import dp
 import globals_state
-from config import INLINE_CACHE_CHANNEL_ID, MAX_VIDEO_BYTES, CAPTION_VIDEO, YOUTUBE_MAX_DURATION_SEC
+import os
+from config import INLINE_CACHE_CHANNEL_ID, MAX_VIDEO_BYTES, CAPTION_VIDEO, YOUTUBE_MAX_DURATION_SEC, DOWNLOAD_HARD_CAP_BYTES, COMPRESS_OVER_LIMIT
 from helpers import (
     is_tiktok, extract_tiktok_url, normalize_tiktok_url,
     is_youtube, extract_youtube_url, normalize_youtube_url,
@@ -48,10 +49,22 @@ from user_label import resolve_user_label
 from limiters import lim
 from youtube_provider import probe_media, download_media
 from download_nudge import after_download_hooks
+from logging_channel import log_event, format_user_for_log
+from helpers import html_escape, code, clamp_reason, exc_type_name
+from send_helpers import fit_video_to_limit
+from youtube_provider import ffmpeg_available
 
 # Сколько максимум ждём скачивание НОВОЙ (некэшированной) ссылки внутри
 # самого inline-запроса, пока Telegram-клиент ждёт ответа.
-INLINE_TIMEOUT_SEC = 8
+# Telegram даёт на ответ ~10 сек, поэтому ждём чуть меньше. Само скачивание при
+# этом НЕ отменяется (раньше wait_for убивал его, и видео не появлялось никогда):
+# оно доделывается в фоне, кладёт file_id в кэш, и повторный запрос отвечает мгновенно.
+INLINE_TIMEOUT_SEC = float(os.getenv("INLINE_TIMEOUT_SEC", "7"))
+
+# Фоновые скачивания: ключ кэша -> Task (дедупликация — одна ссылка не качается дважды).
+_inflight: dict = {}
+# Ошибки последних фоновых скачиваний: ключ -> короткий текст для пользователя.
+_failed: dict = {}
 
 
 def _cache_key(url: str) -> str:
@@ -91,14 +104,20 @@ async def _resolve_and_download(platform: str, url: str, out_dir: Path) -> Path:
         if media.photos or not media.video:
             raise RuntimeError("Это фото-слайдшоу — инлайн поддерживает только видео")
         tmp_path = out_dir / f"inline_{uuid.uuid4().hex[:10]}.mp4"
-        await provider.download_to_file(media.video, tmp_path, MAX_VIDEO_BYTES, stage="inline_video")
+        can_compress = COMPRESS_OVER_LIMIT and ffmpeg_available()
+        await provider.download_to_file(
+            media.video, tmp_path,
+            max(MAX_VIDEO_BYTES, DOWNLOAD_HARD_CAP_BYTES) if can_compress else MAX_VIDEO_BYTES,
+            stage="inline_video",
+        )
         return tmp_path
 
     info = await probe_media(url)
     duration = int(info.get("duration") or 0)
     if duration and duration > YOUTUBE_MAX_DURATION_SEC:
         raise RuntimeError(f"Видео длиннее {YOUTUBE_MAX_DURATION_SEC // 60} мин — не поддерживается в инлайне")
-    path, _dl_info = await download_media(url, out_dir)
+    # В инлайне важна скорость — берём до 720p (дальше бот всё равно сожмёт под лимит).
+    path, _dl_info = await download_media(url, out_dir, quality_height=720)
     return path
 
 
@@ -118,7 +137,11 @@ async def _download_and_cache(platform: str, url: str, uid: int) -> str:
         if size <= 0:
             raise RuntimeError("Скачанный файл пустой")
         if size > MAX_VIDEO_BYTES:
-            raise RuntimeError("Файл больше лимита")
+            fitted = await fit_video_to_limit(tmp_path)
+            if fitted != tmp_path:
+                with contextlib.suppress(Exception):
+                    tmp_path.unlink(missing_ok=True)
+                tmp_path = fitted
 
         bot = globals_state.g_provider.bot if globals_state.g_provider else None
         if not bot:
@@ -191,40 +214,48 @@ async def inline_handler(inline_query: InlineQuery):
         await inline_query.answer([result], cache_time=300, is_personal=False)
         return
 
-    ok_dl, _wait = lim.dl_hit(uid)
-    if not ok_dl:
-        limited = InlineQueryResultArticle(
-            id="ratelimited",
-            title="⏳ Слишком много запросов подряд",
-            description="Попробуй через минуту",
-            input_message_content=InputTextMessageContent(message_text="⏳ Слишком много запросов подряд — попробуй через минуту."),
-        )
-        await inline_query.answer([limited], cache_time=1, is_personal=True)
-        return
+    # Уже качается (этим или другим пользователем) — просто подключаемся к задаче.
+    task = _inflight.get(key)
+    if task is None:
+        ok_dl, _wait = lim.dl_hit(uid)
+        if not ok_dl:
+            limited = InlineQueryResultArticle(
+                id="ratelimited",
+                title="⏳ Слишком много запросов подряд",
+                description="Попробуй через минуту",
+                input_message_content=InputTextMessageContent(message_text="⏳ Слишком много запросов подряд — попробуй через минуту."),
+            )
+            await inline_query.answer([limited], cache_time=1, is_personal=True)
+            return
 
-    # Новая ссылка — качаем сразу, но не дольше INLINE_TIMEOUT_SEC, чтобы
-    # уложиться в то время, что Telegram-клиент готов ждать ответ.
+        _failed.pop(key, None)
+        task = asyncio.create_task(_background_download(key, platform, url, uid, inline_query.bot))
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        _inflight[key] = task
+
     try:
-        file_id = await asyncio.wait_for(_download_and_cache(platform, url, uid), timeout=INLINE_TIMEOUT_SEC)
+        # shield: таймаут ожидания НЕ отменяет само скачивание.
+        file_id = await asyncio.wait_for(asyncio.shield(task), timeout=INLINE_TIMEOUT_SEC)
     except asyncio.TimeoutError:
         slow = InlineQueryResultArticle(
-            id="slow",
-            title="⏳ Видео качается дольше обычного",
-            description="Открой бота напрямую и пришли эту ссылку в чат",
+            id=f"slow:{key}",
+            title="⏳ Видео скачивается…",
+            description="Подожди ~10 сек и поменяй запрос (добавь/убери пробел) — видео будет готово мгновенно",
             input_message_content=InputTextMessageContent(
-                message_text="⏳ Это видео качается дольше, чем позволяет инлайн-режим. "
-                "Пришли ссылку боту напрямую в чат — там лимита по времени нет."
+                message_text="⏳ Видео ещё скачивается. Повтори запрос через несколько секунд — "
+                "оно уже будет в кэше и отправится мгновенно. Или пришли ссылку боту в чат."
             ),
         )
         await inline_query.answer([slow], cache_time=1, is_personal=True)
         return
     except Exception:
+        reason = _failed.get(key) or "Не получилось скачать это видео"
         failed = InlineQueryResultArticle(
-            id="failed",
+            id=f"failed:{key}",
             title="❌ Не получилось скачать это видео",
-            description="Попробуй прислать ссылку боту напрямую в чат",
+            description=reason[:100],
             input_message_content=InputTextMessageContent(
-                message_text="❌ Не получилось скачать это видео. Попробуй прислать ссылку боту напрямую в чат."
+                message_text=f"❌ {reason}. Попробуй прислать ссылку боту напрямую в чат."
             ),
         )
         await inline_query.answer([failed], cache_time=1, is_personal=True)
@@ -238,3 +269,37 @@ async def inline_handler(inline_query: InlineQuery):
         parse_mode="HTML",
     )
     await inline_query.answer([result], cache_time=300, is_personal=False)
+
+
+async def _background_download(key: str, platform: str, url: str, uid: int, bot) -> str:
+    """Скачивание, переживающее таймаут inline-запроса. Ошибки логируются (раньше глотались молча)."""
+    try:
+        return await _download_and_cache(platform, url, uid)
+    except Exception as e:
+        low = str(e).lower()
+        if "file too large" in low or "файл больше" in low:
+            _failed[key] = "Видео слишком тяжёлое для инлайна"
+        elif "слайдшоу" in low:
+            _failed[key] = "Это фото-слайдшоу — в инлайне только видео"
+        elif "не настроен" in low:
+            _failed[key] = "Инлайн-режим не настроен (INLINE_CACHE_CHANNEL_ID)"
+        else:
+            _failed[key] = "Не удалось скачать (приватное/недоступное видео?)"
+        with contextlib.suppress(Exception):
+            await log_event(
+                bot,
+                "dlerr",
+                [
+                    f"❌ Категория: <b>Ошибка инлайн-режима ({html_escape(platform)})</b>",
+                    f"👤 User/id: <b>{format_user_for_log(str(uid), uid)}</b>",
+                    f"🧬 Тип: <b>{html_escape(exc_type_name(e))}</b>",
+                    f"🔗 Ссылка: {code(url)}",
+                    f"🧨 Причина: <b>{html_escape(clamp_reason(e))}</b>",
+                ],
+            )
+        raise
+    finally:
+        _inflight.pop(key, None)
+        # чтобы _failed не рос бесконечно
+        if len(_failed) > 500:
+            _failed.clear()

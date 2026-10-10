@@ -33,6 +33,9 @@ from helpers import (
     exc_type_name,
     extract_tiktok_url,
     normalize_tiktok_url,
+    is_tiktok_short_url,
+    extract_tiktok_video_id,
+    resolve_tiktok_redirect,
 )
 from storage import store
 from user_label import resolve_user_label
@@ -41,7 +44,7 @@ from limiters import lim, download_sem
 from logging_channel import log_event, format_user_for_log
 from strikes import add_download_strike
 from providers import TikWMClient, ProviderSwitcher
-from send_helpers import send_video_smart
+from send_helpers import send_video_smart, fit_video_to_limit
 from picker_state import pending, cleanup_pending, video_extras, new_req_id, cleanup_video_extras, photo_mode_choice_kb
 from keyboards import under_video_kb
 from donate import waiting_stars_amount, send_stars_invoice
@@ -71,6 +74,12 @@ async def _tiktok_ytdlp_fallback(message: Message, uid: int, label: str, url: st
 
         with contextlib.suppress(Exception):
             await status.edit_text("📤 Отправляю…")
+
+        orig_path = tmp_path
+        tmp_path = await fit_video_to_limit(orig_path)
+        if tmp_path != orig_path:
+            with contextlib.suppress(Exception):
+                orig_path.unlink(missing_ok=True)
 
         req_id = new_req_id()
         try:
@@ -177,6 +186,13 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
 
     try:
         async with lim.user_dl_lock(uid), download_sem:
+            # Короткие ссылки (vt./vm./tiktok.com/t/, новый tt.site/t/) раскрываем
+            # сразу — и tikwm, и запасной yt-dlp работают с полным URL надёжнее.
+            if url and is_tiktok_short_url(url):
+                with contextlib.suppress(Exception):
+                    resolved = normalize_tiktok_url(await resolve_tiktok_redirect(client.session, url))
+                    if resolved and extract_tiktok_video_id(resolved):
+                        url = resolved
             with contextlib.suppress(Exception):
                 await status.edit_text("⏳ Скачиваю…")
             try:

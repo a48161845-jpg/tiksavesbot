@@ -18,6 +18,7 @@ from aiogram.types import CallbackQuery
 
 from globals_state import dp
 from config import YOUTUBE_MAX_VIDEO_BYTES, YOUTUBE_MAX_VIDEO_MB
+from send_helpers import fit_video_to_limit
 from helpers import html_escape, code, clamp_reason, exc_type_name
 from storage import store
 from user_label import resolve_user_label
@@ -152,11 +153,19 @@ async def quality_choice_callback(call: CallbackQuery):
                 return
             if size > YOUTUBE_MAX_VIDEO_BYTES:
                 with contextlib.suppress(Exception):
-                    await status.edit_text(
-                        f"❌ Файл в этом качестве больше лимита ({YOUTUBE_MAX_VIDEO_MB} МБ). "
-                        "Попробуй качество пониже."
-                    )
-                return
+                    await status.edit_text("🗜 Видео тяжёлое — сжимаю, чтобы влезло в Telegram…")
+                try:
+                    fitted = await fit_video_to_limit(tmp_path)
+                except Exception:
+                    with contextlib.suppress(Exception):
+                        await status.edit_text(
+                            f"❌ Файл в этом качестве больше лимита ({YOUTUBE_MAX_VIDEO_MB} МБ), "
+                            "а сжать его не получилось. Попробуй качество пониже."
+                        )
+                    return
+                with contextlib.suppress(Exception):
+                    tmp_path.unlink(missing_ok=True)
+                tmp_path = fitted
 
             with contextlib.suppress(Exception):
                 await status.edit_text("📤 Отправляю…")
