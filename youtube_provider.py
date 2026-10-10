@@ -87,6 +87,7 @@ _YT_CLIENT_CHAINS = [
     _YT_PLAYER_CLIENTS,
     ["android_vr", "tv_simply", "web_embedded"],
     ["tv", "web_safari", "mweb"],
+    ["default"],
 ]
 
 _AUTH_WALL_MARKERS = (
@@ -103,7 +104,14 @@ _AUTH_WALL_MARKERS = (
 
 def is_auth_wall_error(e: BaseException) -> bool:
     low = str(e).lower()
-    return any(m in low for m in _AUTH_WALL_MARKERS)
+    return any(m in low for m in _AUTH_WALL_MARKERS) or is_no_formats_error(e)
+
+
+def is_no_formats_error(e: BaseException) -> bool:
+    """Клиент YouTube ответил, но без нормальных форматов (нужен PO-токен / клиент не
+    поддерживает cookies) — лечится сменой набора клиентов, как и стена авторизации."""
+    low = str(e).lower()
+    return "requested format is not available" in low or "no video formats" in low
 
 
 def _is_youtube_url(url: str) -> bool:
@@ -193,6 +201,36 @@ def _resolve_cookies_file() -> Optional[str]:
 _COOKIES_PATH: Optional[str] = _resolve_cookies_file()
 
 
+def _find_js_runtime() -> Dict[str, Dict[str, Any]]:
+    """
+    JS-движок для yt-dlp. Новые версии YouTube прячут ссылки на видео за
+    JS-вызовом (n-challenge): без deno/node остаются только превью и звук
+    ("Requested format is not available"). Ищем deno (в т.ч. из pip-пакета
+    `deno`), затем node.
+    """
+    runtimes: Dict[str, Dict[str, Any]] = {}
+    path = shutil.which("deno")
+    if not path:
+        try:
+            import deno  # type: ignore
+            path = deno.find_deno_bin()
+        except Exception:
+            path = None
+    if path:
+        runtimes["deno"] = {"path": str(path)}
+    node = shutil.which("node") or shutil.which("nodejs")
+    if node:
+        runtimes["node"] = {"path": node}
+    return runtimes
+
+
+_JS_RUNTIMES = _find_js_runtime()
+
+
+def js_runtime_available() -> bool:
+    return bool(_JS_RUNTIMES)
+
+
 def _base_opts(extra: Optional[Dict[str, Any]] = None, logger: Optional[_DiagnosticLogger] = None,
                url: str = "", clients: Optional[List[str]] = None) -> Dict[str, Any]:
     opts: Dict[str, Any] = {
@@ -216,6 +254,10 @@ def _base_opts(extra: Optional[Dict[str, Any]] = None, logger: Optional[_Diagnos
         opts["cookiefile"] = _COOKIES_PATH
     if YTDLP_PROXY:
         opts["proxy"] = YTDLP_PROXY
+    if _JS_RUNTIMES:
+        opts["js_runtimes"] = _JS_RUNTIMES
+        # скрипт-решатель n-challenge: из пакета yt-dlp-ejs, а если его нет — скачать с GitHub
+        opts["remote_components"] = ["ejs:github"]
     low_url = (url or "").lower()
     if "pinterest" in low_url or "pin.it" in low_url:
         # Pinterest отдаёт ошибку "Conflicting range" на чанковых Range-запросах —
@@ -233,11 +275,19 @@ def _base_opts(extra: Optional[Dict[str, Any]] = None, logger: Optional[_Diagnos
 
 def _probe_once(url: str, clients: Optional[List[str]] = None) -> Dict[str, Any]:
     logger = _DiagnosticLogger()
-    opts = _base_opts({"skip_download": True}, logger=logger, url=url, clients=clients)
+    opts = _base_opts(
+        {"skip_download": True, "ignore_no_formats_error": True, "check_formats": False},
+        logger=logger, url=url, clients=clients,
+    )
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
         if info is None:
             raise RuntimeError("yt-dlp: пустой ответ при получении информации о видео")
+        if _is_youtube_url(url) and not any(
+            f.get("height") and f.get("vcodec") not in (None, "none") for f in (info.get("formats") or [])
+        ):
+            # Клиент вернул только превью/сторибоарды — пробуем следующий набор клиентов.
+            raise RuntimeError("Requested format is not available (no video formats)")
         info["_limited_formats_warning"] = logger.limited_formats
         info["_limited_formats_detail"] = logger.last_warning
         return info
@@ -275,6 +325,7 @@ def list_qualities(info: Dict[str, Any], max_options: int = 6) -> List[Dict[str,
     """
     formats = info.get("formats") or []
     by_height: Dict[int, Optional[int]] = {}
+    short_side: Dict[int, int] = {}  # реальная высота -> "привычное" качество (меньшая сторона)
     for f in formats:
         height = f.get("height")
         vcodec = f.get("vcodec")
@@ -285,6 +336,10 @@ def list_qualities(info: Dict[str, Any], max_options: int = 6) -> List[Dict[str,
         if (f.get("format_note") or "").lower() in ("storyboard",):
             continue
         height = int(height)
+        width = f.get("width")
+        # У вертикальных видео (Shorts) "height" — это 1920 для "1080p": подписываем
+        # по меньшей стороне, как привыкли пользователи.
+        short_side[height] = min(height, int(width)) if width else height
         size = f.get("filesize") or f.get("filesize_approx")
         by_height.setdefault(height, None)
         prev = by_height.get(height)
@@ -319,7 +374,7 @@ def list_qualities(info: Dict[str, Any], max_options: int = 6) -> List[Dict[str,
             picked[-1] = heights[-1]
 
     picked = sorted(set(picked), reverse=True)[:max_options]
-    return [{"height": h, "label": f"{h}p", "filesize": by_height.get(h)} for h in picked]
+    return [{"height": h, "label": f"{short_side.get(h, h)}p", "filesize": by_height.get(h)} for h in picked]
 
 
 def _format_for_height(height: Optional[int]) -> str:

@@ -24,7 +24,7 @@ from providers import TikWMClient, BaseProvider, ProviderSwitcher
 from logging_channel import autosave_loop, start_log_worker, stop_log_worker, send_channel_log
 from db_report import send_db_json
 from local_bot_api import start_local_bot_api, stop_local_bot_api
-from youtube_provider import ffmpeg_available
+from youtube_provider import ffmpeg_available, js_runtime_available
 
 # Импорт регистрирует все хендлеры (@dp.message/@dp.callback_query) на dp.
 import handlers  # noqa: F401
@@ -124,6 +124,12 @@ async def main():
                     "что пакет imageio-ffmpeg реально ставится на этом сервере."
                 )
             )
+            js_line = (
+                "🧩 JS-движок (deno/node): <b>найден</b> — YouTube отдаёт видео"
+                if js_runtime_available()
+                else "🧩 JS-движок (deno/node): <b>НЕ найден</b> ⚠️ — YouTube отдаст только звук и превью "
+                "(ошибка «Requested format is not available»). Проверь, что в requirements.txt установился пакет deno."
+            )
             await send_channel_log(
                 bot,
                 "🚀 <b>Бот запущен</b>\n"
@@ -134,6 +140,7 @@ async def main():
                 f"📡 Провайдер(ы): <b>{provider_line}</b>\n"
                 f"{api_mode_line}\n"
                 f"{ffmpeg_line}\n"
+                f"{js_line}\n"
                 f"⚙️ Параллельных скачиваний: <b>{GLOBAL_CONCURRENCY}</b>\n"
                 f"🕒 Время запуска: {now_msk_str()}",
             )
