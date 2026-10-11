@@ -84,11 +84,21 @@ _YT_PLAYER_CLIENTS = ["android", "ios", "tv_embedded", "mweb", "web"]
 # наборы клиентов БЕЗ cookies. android_vr / tv_simply / web_embedded обычно не
 # требуют ни входа, ни PO-токена. Применяется только к YouTube.
 _YT_CLIENT_CHAINS = [
-    _YT_PLAYER_CLIENTS,
-    ["android_vr", "tv_simply", "web_embedded"],
-    ["tv", "web_safari", "mweb"],
+    # С рабочим JS-движком (deno) клиенты по умолчанию отдают всю лестницу
+    # качеств вплоть до 4K. Старые android/ios без PO-токена отдают ТОЛЬКО
+    # готовый файл 360p (и без ошибки!) — поэтому они в самом конце.
     ["default"],
+    ["tv", "web_safari", "mweb"],
+    ["android_vr", "tv_simply", "web_embedded"],
+    _YT_PLAYER_CLIENTS,
 ]
+
+# Какой набор клиентов сработал лучше всего для ссылки (запоминаем на пробе,
+# чтобы скачивание сразу шло тем же путём и получало то же качество).
+_CLIENT_CACHE: Dict[str, List[str]] = {}
+# Меньшая сторона видео (px), начиная с которой считаем качество "достаточно хорошим"
+# и не перебираем остальные наборы клиентов.
+_GOOD_ENOUGH_SIDE = 720
 
 _AUTH_WALL_MARKERS = (
     "sign in to confirm",
@@ -119,9 +129,26 @@ def _is_youtube_url(url: str) -> bool:
     return "youtube.com" in low or "youtu.be" in low
 
 
+def _best_side(info: Dict[str, Any]) -> int:
+    """Меньшая сторона самого большого видеоформата (1080 для 1080x1920 и для 1920x1080)."""
+    best = 0
+    for f in info.get("formats") or []:
+        h = f.get("height")
+        if not h or f.get("vcodec") in (None, "none"):
+            continue
+        w = f.get("width")
+        best = max(best, min(int(h), int(w)) if w else int(h))
+    return best
+
+
 def _run_chains(url: str, fn):
     """fn(clients) -> result. Для YouTube перебирает наборы клиентов при стене авторизации."""
-    chains = _YT_CLIENT_CHAINS if _is_youtube_url(url) else [None]
+    if not _is_youtube_url(url):
+        return fn(None)
+    chains = list(_YT_CLIENT_CHAINS)
+    cached = _CLIENT_CACHE.get(url)
+    if cached:
+        chains = [cached] + [c for c in chains if c != cached]
     last: Optional[BaseException] = None
     for clients in chains:
         try:
@@ -131,6 +158,7 @@ def _run_chains(url: str, fn):
             if not is_auth_wall_error(e):
                 raise
     raise last  # type: ignore[misc]
+
 
 # Предпочитаем h264/mp4 — Telegram воспроизводит его без перекодирования на
 # любом устройстве, к тому же декодируется быстрее vp9/av1 (важно, когда
@@ -294,7 +322,40 @@ def _probe_once(url: str, clients: Optional[List[str]] = None) -> Dict[str, Any]
 
 
 def _probe_sync(url: str) -> Dict[str, Any]:
-    return _run_chains(url, lambda clients: _probe_once(url, clients))
+    if not _is_youtube_url(url):
+        return _probe_once(url, None)
+
+    # Перебираем наборы клиентов и берём тот, что отдал лучшее качество: часть
+    # клиентов отвечает "успешно", но подсовывает только 360p.
+    best_info: Optional[Dict[str, Any]] = None
+    best_clients: Optional[List[str]] = None
+    best_side = -1
+    last: Optional[BaseException] = None
+    for clients in _YT_CLIENT_CHAINS:
+        try:
+            info = _probe_once(url, clients)
+        except Exception as e:
+            last = e
+            if not is_auth_wall_error(e):
+                if best_info is not None:
+                    break
+                raise
+            continue
+        side = _best_side(info)
+        if side > best_side:
+            best_info, best_clients, best_side = info, clients, side
+        if side >= _GOOD_ENOUGH_SIDE:
+            break
+
+    if best_info is None:
+        raise last or RuntimeError("yt-dlp: не удалось получить форматы")
+    if best_clients:
+        _CLIENT_CACHE[url] = best_clients
+        if len(_CLIENT_CACHE) > 500:
+            _CLIENT_CACHE.clear()
+    best_info["_yt_clients"] = best_clients
+    best_info["_best_side"] = best_side
+    return best_info
 
 
 async def probe_youtube(url: str) -> Dict[str, Any]:
