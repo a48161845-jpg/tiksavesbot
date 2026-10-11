@@ -14,7 +14,7 @@ from logging_channel import log_event
 
 # Не шлём в канал чаще, чем раз в это окно — иначе при массовом наплыве
 # ссылок на старом yt-dlp лог-канал завалит одинаковыми сообщениями.
-_WARN_COOLDOWN_SEC = 1800
+_WARN_COOLDOWN_SEC = 120
 _last_warn_ts = 0.0
 
 
@@ -29,7 +29,11 @@ async def maybe_report_limited_quality(
 
     explicit_warning = bool(info.get("_limited_formats_warning"))
     heights = [q["height"] for q in qualities]
-    suspiciously_few = bool(heights) and max(heights) <= 360 and len(heights) <= 2
+    best_side = info.get("_best_side")
+    if best_side is not None:
+        suspiciously_few = int(best_side) < 720
+    else:
+        suspiciously_few = bool(heights) and max(heights) <= 480 and len(heights) <= 3
 
     if not (explicit_warning or suspiciously_few):
         return
@@ -40,6 +44,12 @@ async def maybe_report_limited_quality(
     _last_warn_ts = now
 
     detail = info.get("_limited_formats_detail") or ""
+    try:
+        from youtube_provider import environment_summary
+        env = environment_summary()
+    except Exception:
+        env = "?"
+    diag = "\n".join(info.get("_diag") or []) or "—"
     best = f"{max(heights)}p" if heights else "нет вариантов"
 
     await log_event(
@@ -50,6 +60,8 @@ async def maybe_report_limited_quality(
             f"📡 Источник: <b>{html_escape(platform)}</b>",
             f"🔝 Лучшее доступное: <b>{html_escape(best)}</b>",
             f"🔗 Ссылка: {code(url)}",
+            f"🧰 Окружение: <b>{html_escape(env)}</b>",
+            f"🔬 Что ответил YouTube по наборам клиентов:\n<pre>{html_escape(diag[:1500])}</pre>",
             "📌 Скорее всего, версия yt-dlp на сервере отстала от текущего "
             "плеера YouTube (не удаётся расшифровать подпись у "
             "качественных потоков — доживают только старые низкие форматы). "

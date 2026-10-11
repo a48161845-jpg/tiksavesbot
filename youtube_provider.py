@@ -191,6 +191,13 @@ class _DiagnosticLogger:
     def __init__(self) -> None:
         self.limited_formats = False
         self.last_warning = ""
+        self.messages: List[str] = []  # последние предупреждения/ошибки yt-dlp — для диагностики
+
+    def _remember(self, msg: str) -> None:
+        msg = (msg or "").strip().replace("\n", " ")
+        if msg and not msg.startswith("[debug]") and msg not in self.messages:
+            self.messages.append(msg[:260])
+            del self.messages[:-6]
 
     def _check(self, msg: str) -> None:
         low = msg.lower()
@@ -205,9 +212,11 @@ class _DiagnosticLogger:
         self._check(msg)
 
     def warning(self, msg: str) -> None:
+        self._remember(msg)
         self._check(msg)
 
     def error(self, msg: str) -> None:
+        self._remember(msg)
         self._check(msg)
 
 
@@ -257,6 +266,21 @@ _JS_RUNTIMES = _find_js_runtime()
 
 def js_runtime_available() -> bool:
     return bool(_JS_RUNTIMES)
+
+
+def environment_summary() -> str:
+    """Короткая сводка окружения yt-dlp для лог-канала."""
+    import importlib.util
+    try:
+        ver = yt_dlp.version.__version__
+    except Exception:
+        ver = "?"
+    ejs = importlib.util.find_spec("yt_dlp_ejs") is not None
+    return (
+        f"yt-dlp {ver}; JS: {','.join(_JS_RUNTIMES) or 'НЕТ'}; yt-dlp-ejs: {'да' if ejs else 'НЕТ'}; "
+        f"ffmpeg: {'да' if _FFMPEG_PATH else 'НЕТ'}; cookies: {'да' if _COOKIES_PATH else 'нет'}; "
+        f"proxy: {'да' if YTDLP_PROXY else 'нет'}"
+    )
 
 
 def _base_opts(extra: Optional[Dict[str, Any]] = None, logger: Optional[_DiagnosticLogger] = None,
@@ -316,6 +340,7 @@ def _probe_once(url: str, clients: Optional[List[str]] = None) -> Dict[str, Any]
         ):
             # Клиент вернул только превью/сторибоарды — пробуем следующий набор клиентов.
             raise RuntimeError("Requested format is not available (no video formats)")
+        info["_msgs"] = list(logger.messages)
         info["_limited_formats_warning"] = logger.limited_formats
         info["_limited_formats_detail"] = logger.last_warning
         return info
@@ -331,17 +356,21 @@ def _probe_sync(url: str) -> Dict[str, Any]:
     best_clients: Optional[List[str]] = None
     best_side = -1
     last: Optional[BaseException] = None
+    diag: List[str] = []
     for clients in _YT_CLIENT_CHAINS:
         try:
             info = _probe_once(url, clients)
         except Exception as e:
             last = e
+            diag.append(f"{'+'.join(clients or [])}: ОШИБКА {str(e)[:160]}")
             if not is_auth_wall_error(e):
                 if best_info is not None:
                     break
                 raise
             continue
         side = _best_side(info)
+        msgs = "; ".join(info.get("_msgs") or [])
+        diag.append(f"{'+'.join(clients or [])}: {side}p" + (f" | {msgs[:240]}" if msgs else ""))
         if side > best_side:
             best_info, best_clients, best_side = info, clients, side
         if side >= _GOOD_ENOUGH_SIDE:
@@ -353,6 +382,7 @@ def _probe_sync(url: str) -> Dict[str, Any]:
         _CLIENT_CACHE[url] = best_clients
         if len(_CLIENT_CACHE) > 500:
             _CLIENT_CACHE.clear()
+    best_info["_diag"] = diag
     best_info["_yt_clients"] = best_clients
     best_info["_best_side"] = best_side
     return best_info
