@@ -24,19 +24,21 @@ from providers import TikWMClient, BaseProvider, ProviderSwitcher
 from logging_channel import autosave_loop, start_log_worker, stop_log_worker, send_channel_log
 from db_report import send_db_json
 from local_bot_api import start_local_bot_api, stop_local_bot_api
+from ytdlp_updater import autoupdate_loop
 from youtube_provider import ffmpeg_available, js_runtime_available
 
 # Импорт регистрирует все хендлеры (@dp.message/@dp.callback_query) на dp.
 import handlers  # noqa: F401
 
 _autosave_task: Optional[asyncio.Task] = None
+_ytdlp_update_task: Optional[asyncio.Task] = None
 _monthly_task: Optional[asyncio.Task] = None
 _pinned_overview_task: Optional[asyncio.Task] = None
 _local_bot_api_proc = None
 
 
 async def main():
-    global _autosave_task, _monthly_task, _pinned_overview_task, _local_bot_api_proc
+    global _autosave_task, _monthly_task, _pinned_overview_task, _local_bot_api_proc, _ytdlp_update_task
 
     # 1) Инициализируем БД (создаём таблицы, мигрируем из JSON если нужно)
     await init_db()
@@ -105,6 +107,7 @@ async def main():
         await start_log_worker(bot)
 
         _autosave_task = asyncio.create_task(autosave_loop())
+        _ytdlp_update_task = asyncio.create_task(autoupdate_loop(bot))
 
         start_ts = time.time()
         shutdown_reason = "⏹️ Штатная остановка"
@@ -152,7 +155,7 @@ async def main():
             shutdown_reason = f"💥 Аварийная остановка: <b>{e.__class__.__name__}</b> — {html_escape(str(e)[:200])}"
             raise
         finally:
-            for task in (_autosave_task, _monthly_task, _pinned_overview_task):
+            for task in (_autosave_task, _monthly_task, _pinned_overview_task, _ytdlp_update_task):
                 if task and not task.done():
                     task.cancel()
                     with contextlib.suppress(Exception):

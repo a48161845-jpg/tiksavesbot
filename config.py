@@ -209,6 +209,13 @@ YTDLP_COOKIES_B64 = os.getenv("YTDLP_COOKIES_B64", "").strip()
 # Прокси для yt-dlp (http://user:pass@host:port или socks5://...). Бот-проверка YouTube
 # завязана на IP: через прокси с "чистым" IP cookies не нужны.
 YTDLP_PROXY = os.getenv("YTDLP_PROXY", "").strip()
+# Опционально: URL сервера PO-токенов (https://github.com/Brainicism/bgutil-ytdlp-pot-provider),
+# например http://127.0.0.1:4416. Нужен плагин bgutil-ytdlp-pot-provider.
+YTDLP_POT_URL = os.getenv("YTDLP_POT_URL", "").strip()
+# Автообновление yt-dlp (YouTube ломает старые версии каждые несколько недель).
+YTDLP_AUTOUPDATE = os.getenv("YTDLP_AUTOUPDATE", "1").strip() == "1"
+YTDLP_UPDATE_PRE = os.getenv("YTDLP_UPDATE_PRE", "1").strip() == "1"   # nightly-сборки — фиксы быстрее
+YTDLP_UPDATE_EVERY_HOURS = int(os.getenv("YTDLP_UPDATE_EVERY_HOURS", "12"))
 
 MAX_AUDIO_MB = int(os.getenv("MAX_AUDIO_MB", "25"))
 MAX_AUDIO_BYTES = MAX_AUDIO_MB * 1024 * 1024

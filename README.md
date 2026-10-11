@@ -62,3 +62,9 @@ tiksaves_bot/
 - Pinterest: исправлена ошибка `Conflicting range`.
 - TikTok-слайдшоу: исправлен HTTP 403 при скачивании фото (Referer + повтор с другим User-Agent).
 - yt-dlp: поддержка cookies (`YTDLP_COOKIES_B64` / `YTDLP_COOKIES_FILE`) — лечит «Sign in to confirm you're not a bot» на YouTube и закрытые Instagram-посты.
+
+## Стабильность качества YouTube
+- Для YouTube cookies используются только как крайняя мера (с ними YouTube включает SABR-only и отдаёт 360p).
+- После скачивания бот проверяет реальное разрешение файла; если оно хуже доступного — пробует другие наборы клиентов и оставляет лучший файл. При желании добирает у cobalt (`COBALT_API_URL`).
+- yt-dlp сам обновляется (`YTDLP_AUTOUPDATE=1`) и перезапускает бота при смене версии.
+- При низком качестве в лог-канал приходит `#ytdlpold` с диагностикой.

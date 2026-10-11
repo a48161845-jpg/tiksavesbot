@@ -12,7 +12,10 @@
 через параллельные фрагменты/чанки.
 """
 import asyncio
+import re
 import shutil
+import subprocess
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,6 +28,7 @@ from config import (
     YTDLP_COOKIES_FILE,
     YTDLP_COOKIES_B64,
     YTDLP_PROXY,
+    YTDLP_POT_URL,
     DOWNLOAD_HARD_CAP_BYTES,
 )
 from cobalt_client import cobalt_enabled, cobalt_download
@@ -91,11 +95,19 @@ _YT_CLIENT_CHAINS = [
     ["tv", "web_safari", "mweb"],
     ["android_vr", "tv_simply", "web_embedded"],
     _YT_PLAYER_CLIENTS,
+    # Cookies для YouTube — ТОЛЬКО крайняя мера (если без них требуют вход). С cookies
+    # залогиненного аккаунта YouTube часто включает "SABR-only": у web-клиентов
+    # пропадают прямые ссылки и остаётся один 360p. Маркер "+cookies" включает их.
+    ["default", "+cookies"],
+    ["tv", "web_safari", "mweb", "+cookies"],
 ]
 
 # Какой набор клиентов сработал лучше всего для ссылки (запоминаем на пробе,
 # чтобы скачивание сразу шло тем же путём и получало то же качество).
 _CLIENT_CACHE: Dict[str, List[str]] = {}
+# Лучшая реальная высота (px) среди форматов, которую видел probe, — чтобы после
+# скачивания проверить, что файл не оказался хуже обещанного.
+_BEST_HEIGHT_CACHE: Dict[str, int] = {}
 # Меньшая сторона видео (px), начиная с которой считаем качество "достаточно хорошим"
 # и не перебираем остальные наборы клиентов.
 _GOOD_ENOUGH_SIDE = 720
@@ -129,6 +141,26 @@ def _is_youtube_url(url: str) -> bool:
     return "youtube.com" in low or "youtu.be" in low
 
 
+def _video_height(path: Path) -> int:
+    """Реальная высота видеодорожки файла (px) через `ffmpeg -i`; 0 — не удалось определить."""
+    if not _FFMPEG_PATH:
+        return 0
+    try:
+        r = subprocess.run([_FFMPEG_PATH, "-hide_banner", "-i", str(path)], capture_output=True, timeout=30)
+        txt = r.stderr.decode("utf-8", "ignore")
+        m = re.search(r"Video:.*?,\s*(\d{2,5})x(\d{2,5})", txt)
+        if m:
+            return int(m.group(2))
+    except Exception:
+        pass
+    return 0
+
+
+def _yt_chains() -> List[List[str]]:
+    """Цепочки клиентов; варианты с cookies — только если cookies вообще настроены."""
+    return [c for c in _YT_CLIENT_CHAINS if _COOKIES_PATH or "+cookies" not in c]
+
+
 def _best_side(info: Dict[str, Any]) -> int:
     """Меньшая сторона самого большого видеоформата (1080 для 1080x1920 и для 1920x1080)."""
     best = 0
@@ -145,7 +177,7 @@ def _run_chains(url: str, fn):
     """fn(clients) -> result. Для YouTube перебирает наборы клиентов при стене авторизации."""
     if not _is_youtube_url(url):
         return fn(None)
-    chains = list(_YT_CLIENT_CHAINS)
+    chains = _yt_chains()
     cached = _CLIENT_CACHE.get(url)
     if cached:
         chains = [cached] + [c for c in chains if c != cached]
@@ -294,7 +326,8 @@ def _base_opts(extra: Optional[Dict[str, Any]] = None, logger: Optional[_Diagnos
         "retries": 5,
         "fragment_retries": 10,
         "skip_unavailable_fragments": False,
-        "extractor_args": {"youtube": {"player_client": list(clients or _YT_PLAYER_CLIENTS)}},
+        "extractor_args": {"youtube": {"player_client": [c for c in (clients or _YT_PLAYER_CLIENTS) if c != "+cookies"]
+                                       or list(_YT_PLAYER_CLIENTS)}},
         "format_sort": _FORMAT_SORT,
         # Параллельные фрагменты — основное ускорение для DASH/HLS (YouTube,
         # часто и VK). Без этого фрагменты качаются строго по одному.
@@ -302,10 +335,16 @@ def _base_opts(extra: Optional[Dict[str, Any]] = None, logger: Optional[_Diagnos
         # Параллельные HTTP Range-запросы для обычных (progressive) ссылок.
         "http_chunk_size": max(1, YOUTUBE_HTTP_CHUNK_MB) * 1024 * 1024,
     }
-    if _COOKIES_PATH:
+    # YouTube: cookies только по маркеру "+cookies" (см. _YT_CLIENT_CHAINS); остальные
+    # площадки (Instagram, VK, TikTok 18+) — всегда, если cookies заданы.
+    if _COOKIES_PATH and ("+cookies" in (clients or []) or not _is_youtube_url(url)):
         opts["cookiefile"] = _COOKIES_PATH
     if YTDLP_PROXY:
         opts["proxy"] = YTDLP_PROXY
+    if YTDLP_POT_URL:
+        # Опционально: сервер PO-токенов (bgutil-ytdlp-pot-provider). Если плагин
+        # не установлен, yt-dlp просто игнорирует эту настройку.
+        opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [YTDLP_POT_URL]}
     if _JS_RUNTIMES:
         opts["js_runtimes"] = _JS_RUNTIMES
         # скрипт-решатель n-challenge: из пакета yt-dlp-ejs, а если его нет — скачать с GitHub
@@ -357,12 +396,14 @@ def _probe_sync(url: str) -> Dict[str, Any]:
     best_side = -1
     last: Optional[BaseException] = None
     diag: List[str] = []
-    for clients in _YT_CLIENT_CHAINS:
+    for clients in _yt_chains():
+        if "+cookies" in clients and best_info is not None:
+            continue  # с cookies пробуем только если без них вообще ничего не вышло
         try:
             info = _probe_once(url, clients)
         except Exception as e:
             last = e
-            diag.append(f"{'+'.join(clients or [])}: ОШИБКА {str(e)[:160]}")
+            diag.append(f"{','.join(clients or [])}: ОШИБКА {str(e)[:160]}")
             if not is_auth_wall_error(e):
                 if best_info is not None:
                     break
@@ -370,7 +411,7 @@ def _probe_sync(url: str) -> Dict[str, Any]:
             continue
         side = _best_side(info)
         msgs = "; ".join(info.get("_msgs") or [])
-        diag.append(f"{'+'.join(clients or [])}: {side}p" + (f" | {msgs[:240]}" if msgs else ""))
+        diag.append(f"{','.join(clients or [])}: {side}p" + (f" | {msgs[:240]}" if msgs else ""))
         if side > best_side:
             best_info, best_clients, best_side = info, clients, side
         if side >= _GOOD_ENOUGH_SIDE:
@@ -383,6 +424,13 @@ def _probe_sync(url: str) -> Dict[str, Any]:
         if len(_CLIENT_CACHE) > 500:
             _CLIENT_CACHE.clear()
     best_info["_diag"] = diag
+    _BEST_HEIGHT_CACHE[url] = max(
+        (int(f["height"]) for f in (best_info.get("formats") or [])
+         if f.get("height") and f.get("vcodec") not in (None, "none")),
+        default=0,
+    )
+    if len(_BEST_HEIGHT_CACHE) > 500:
+        _BEST_HEIGHT_CACHE.clear()
     best_info["_yt_clients"] = best_clients
     best_info["_best_side"] = best_side
     return best_info
@@ -499,8 +547,10 @@ async def download_youtube(
     """
     info_holder: Dict[str, Any] = {}
 
-    def _run(clients: Optional[List[str]] = None) -> Path:
-        out_template = str(out_dir / "%(id)s.%(ext)s")
+    def _run(clients: Optional[List[str]] = None, tag: str = "") -> Path:
+        # tag — уникальный суффикс имени: попытки разными клиентами и параллельные
+        # скачивания одного видео не затирают файлы друг друга.
+        out_template = str(out_dir / f"%(id)s{tag}.%(ext)s")
 
         effective_height = quality_height or max_height
         fmt = _format_for_height(effective_height)
@@ -530,8 +580,69 @@ async def download_youtube(
                 raise RuntimeError(f"yt-dlp: итоговый файл не найден ({filename})")
             return p
 
+    def _download_best() -> Tuple[Path, int, int]:
+        """
+        Пробует наборы клиентов и ПРОВЕРЯЕТ реальное качество файла. Если пришло
+        заметно хуже, чем доступно/выбрано (YouTube "подсунул" 360p) — пробует
+        следующий набор; в итоге оставляет лучший файл. Возвращает (путь, высота, цель).
+        """
+        if not _is_youtube_url(url):
+            p = _run(None, f".{uuid.uuid4().hex[:6]}")
+            return p, 0, 0
+
+        wanted = quality_height or max_height
+        known_best = _BEST_HEIGHT_CACHE.get(url) or 0
+        target = min(wanted, known_best) if known_best else 0  # 0 — неизвестно, не придираемся
+
+        chains = _yt_chains()
+        cached = _CLIENT_CACHE.get(url)
+        if cached:
+            chains = [cached] + [c for c in chains if c != cached]
+
+        best: Optional[Tuple[Path, int]] = None
+        last: Optional[BaseException] = None
+        for clients in chains:
+            if "+cookies" in clients and best is not None:
+                continue
+            try:
+                p = _run(clients, f".{uuid.uuid4().hex[:6]}")
+            except Exception as e:
+                last = e
+                if not is_auth_wall_error(e):
+                    if best is not None:
+                        break
+                    raise
+                continue
+            h = _video_height(p)
+            if target == 0 or h == 0 or h >= target * 0.85:
+                if best is not None:
+                    best[0].unlink(missing_ok=True)
+                return p, h, target
+            # качество хуже ожидаемого — запоминаем, если лучше предыдущего, и пробуем дальше
+            if best is None or h > best[1]:
+                if best is not None:
+                    best[0].unlink(missing_ok=True)
+                best = (p, h)
+            else:
+                p.unlink(missing_ok=True)
+        if best is not None:
+            return best[0], best[1], target
+        raise last or RuntimeError("yt-dlp: не удалось скачать видео")
+
     try:
-        path = await asyncio.to_thread(lambda: _run_chains(url, _run))
+        path, got_h, target = await asyncio.to_thread(_download_best)
+        # Совсем плохо (меньше 85% от цели) и есть cobalt — пробуем взять качество у него.
+        if target and 0 < got_h < target * 0.85 and cobalt_enabled():
+            try:
+                alt = await cobalt_download(url, out_dir, height=quality_height, max_bytes=DOWNLOAD_HARD_CAP_BYTES)
+                alt_h = await asyncio.to_thread(_video_height, alt)
+                if alt_h > got_h:
+                    path.unlink(missing_ok=True)
+                    path = alt
+                else:
+                    alt.unlink(missing_ok=True)
+            except Exception:
+                pass
     except Exception as e:
         if is_auth_wall_error(e) and cobalt_enabled():
             path = await cobalt_download(url, out_dir, height=quality_height, max_bytes=DOWNLOAD_HARD_CAP_BYTES)
