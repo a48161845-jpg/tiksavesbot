@@ -21,6 +21,7 @@ from config import YOUTUBE_MAX_VIDEO_BYTES, YOUTUBE_MAX_VIDEO_MB
 from send_helpers import fit_video_to_limit
 from helpers import html_escape, code, clamp_reason, exc_type_name
 from storage import store
+from i18n import tr
 from user_label import resolve_user_label
 from gates import gate_callback
 from limiters import download_sem
@@ -61,7 +62,7 @@ async def quality_choice_callback(call: CallbackQuery):
     data = call.data or ""
     parts = data.split(":", 3)
     if len(parts) != 4:
-        await call.answer("Что-то пошло не так.", show_alert=True)
+        await call.answer(tr(uid, "Что-то пошло не так."), show_alert=True)
         return
     _, kind, height_str, req_id = parts
 
@@ -70,11 +71,11 @@ async def quality_choice_callback(call: CallbackQuery):
     if not st:
         await call.answer()
         with contextlib.suppress(Exception):
-            await call.message.edit_text("⌛ Время выбора качества истекло. Пришли ссылку ещё раз.")
+            await call.message.edit_text(tr(uid, "⌛ Время выбора качества истекло. Пришли ссылку ещё раз."))
         return
 
     if st["uid"] != uid:
-        await call.answer("Это не твой запрос.", show_alert=True)
+        await call.answer(tr(uid, "Это не твой запрос."), show_alert=True)
         return
 
     quality_pending.pop(req_id, None)
@@ -87,7 +88,7 @@ async def quality_choice_callback(call: CallbackQuery):
 
     if kind == "x":
         with contextlib.suppress(Exception):
-            await call.message.edit_text("❌ Скачивание отменено.")
+            await call.message.edit_text(tr(uid, "❌ Скачивание отменено."))
         return
 
     tmp_path: Optional[Path] = None
@@ -97,29 +98,29 @@ async def quality_choice_callback(call: CallbackQuery):
         async with download_sem:
             if kind == "a":
                 with contextlib.suppress(Exception):
-                    await status.edit_text("⬇️ Скачиваю звук…")
+                    await status.edit_text(tr(uid, "⬇️ Скачиваю звук…"))
                 try:
                     tmp_path = await download_audio_only(url, Path("."))
                 except Exception as e:
                     await _log_err(call.bot, platform, "audio_download", uid, label, url, e)
                     with contextlib.suppress(Exception):
-                        await status.edit_text(f"❌ Не получилось скачать звук с {platform_name}.")
+                        await status.edit_text(tr(uid, "❌ Не получилось скачать звук с {p}.", p=platform_name))
                     return
 
                 size = tmp_path.stat().st_size if tmp_path.exists() else 0
                 if size <= 0:
                     with contextlib.suppress(Exception):
-                        await status.edit_text("❌ Скачанный файл пустой. Попробуй ещё раз.")
+                        await status.edit_text(tr(uid, "❌ Скачанный файл пустой. Попробуй ещё раз."))
                     return
 
                 with contextlib.suppress(Exception):
-                    await status.edit_text("📤 Отправляю…")
+                    await status.edit_text(tr(uid, "📤 Отправляю…"))
                 try:
-                    await call.message.answer_audio(FSInputFile(tmp_path), caption=CAPTION_AUDIO, parse_mode="HTML")
+                    await call.message.answer_audio(FSInputFile(tmp_path), caption=tr(uid, CAPTION_AUDIO), parse_mode="HTML")
                 except Exception as e:
                     await _log_err(call.bot, platform, "audio_send", uid, label, url, e)
                     with contextlib.suppress(Exception):
-                        await status.edit_text("❌ Не удалось отправить звук.")
+                        await status.edit_text(tr(uid, "❌ Не удалось отправить звук."))
                     return
 
                 store.inc_audio(uid, 1)
@@ -130,10 +131,10 @@ async def quality_choice_callback(call: CallbackQuery):
             # kind == "v"
             height = int(height_str) if height_str.isdigit() else 0
             quality_height = height if height > 0 else None
-            quality_label = f"{height}p" if height > 0 else "лучшем доступном"
+            quality_label = f"{height}p" if height > 0 else tr(uid, "лучшем доступном")
 
             with contextlib.suppress(Exception):
-                await status.edit_text(f"⬇️ Скачиваю в {quality_label} качестве…")
+                await status.edit_text(tr(uid, "⬇️ Скачиваю в {q} качестве…", q=quality_label))
 
             try:
                 tmp_path, dl_info = await download_media(url, Path("."), quality_height=quality_height)
@@ -141,26 +142,24 @@ async def quality_choice_callback(call: CallbackQuery):
                 await _log_err(call.bot, platform, "download", uid, label, url, e)
                 with contextlib.suppress(Exception):
                     await status.edit_text(
-                        f"❌ Не получилось скачать в этом качестве с {platform_name}. "
-                        "Попробуй другое качество или другую ссылку."
+                        tr(uid, "❌ Не получилось скачать в этом качестве с {p}. Попробуй другое качество или другую ссылку.", p=platform_name)
                     )
                 return
 
             size = tmp_path.stat().st_size if tmp_path.exists() else 0
             if size <= 0:
                 with contextlib.suppress(Exception):
-                    await status.edit_text("❌ Скачанный файл пустой. Попробуй ещё раз.")
+                    await status.edit_text(tr(uid, "❌ Скачанный файл пустой. Попробуй ещё раз."))
                 return
             if size > YOUTUBE_MAX_VIDEO_BYTES:
                 with contextlib.suppress(Exception):
-                    await status.edit_text("🗜 Видео тяжёлое — сжимаю, чтобы влезло в Telegram…")
+                    await status.edit_text(tr(uid, "🗜 Видео тяжёлое — сжимаю, чтобы влезло в Telegram…"))
                 try:
                     fitted = await fit_video_to_limit(tmp_path)
                 except Exception:
                     with contextlib.suppress(Exception):
                         await status.edit_text(
-                            f"❌ Файл в этом качестве больше лимита ({YOUTUBE_MAX_VIDEO_MB} МБ), "
-                            "а сжать его не получилось. Попробуй качество пониже."
+                            tr(uid, "❌ Файл в этом качестве больше лимита ({mb} МБ), а сжать его не получилось. Попробуй качество пониже.", mb=YOUTUBE_MAX_VIDEO_MB)
                         )
                     return
                 with contextlib.suppress(Exception):
@@ -178,8 +177,7 @@ async def quality_choice_callback(call: CallbackQuery):
                 await _log_err(call.bot, platform, "send", uid, label, url, e)
                 with contextlib.suppress(Exception):
                     await status.edit_text(
-                        "❌ Telegram отклонил файл — скорее всего, он слишком большой "
-                        f"для отправки ботом (лимит: {YOUTUBE_MAX_VIDEO_MB} МБ на файл)."
+                        tr(uid, "❌ Telegram отклонил файл — скорее всего, он слишком большой для отправки ботом (лимит: {mb} МБ на файл).", mb=YOUTUBE_MAX_VIDEO_MB)
                     )
                 return
 

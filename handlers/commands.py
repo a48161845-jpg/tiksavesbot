@@ -8,6 +8,7 @@ from globals_state import dp
 from config import log
 from helpers import html_escape, is_admin, parse_stats_mode, parse_date_token
 from storage import store
+from i18n import tr, get_lang, has_lang
 from user_label import resolve_user_label
 from gates import gate_message
 from logging_channel import log_event, log_admin_action_to_channel, format_user_for_log
@@ -52,7 +53,13 @@ async def start_cmd(message: Message, command: CommandObject):
     if not await gate_message(message, label):
         return
 
-    await message.answer(START_TEXT, parse_mode="HTML")
+    # Новый пользователь (или тот, кто ещё не выбирал язык) — сначала просим выбрать язык.
+    if not has_lang(uid):
+        from handlers.settings_handler import send_language_prompt
+        await send_language_prompt(message)
+        return
+
+    await message.answer(tr(uid, START_TEXT), parse_mode="HTML")
 
 
 @dp.message(Command("help"))
@@ -62,7 +69,7 @@ async def help_cmd(message: Message):
     store.set_user_label(uid, label)
     if not await gate_message(message, label):
         return
-    await message.answer(HELP_TEXT, parse_mode="HTML", reply_markup=help_kb())
+    await message.answer(tr(uid, HELP_TEXT), parse_mode="HTML", reply_markup=help_kb(get_lang(uid)))
     log.info("help: uid=%s", uid)
 
 

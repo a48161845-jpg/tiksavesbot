@@ -20,6 +20,7 @@ from config import (
 )
 from helpers import html_escape, code, clamp_reason, exc_type_name, is_youtube, extract_youtube_url, normalize_youtube_url
 from storage import store
+from i18n import tr, get_lang
 from user_label import resolve_user_label
 from gates import gate_message
 from limiters import lim, download_sem
@@ -71,11 +72,11 @@ async def youtube_handler(message: Message):
 
     ok_dl, wait_dl = lim.dl_hit(uid)
     if not ok_dl:
-        await message.answer(MSG_DL.format(n=wait_dl))
+        await message.answer(tr(message, MSG_DL, n=wait_dl))
         await add_download_strike(message.bot, uid, label, "Лимит скачиваний", src=url)
         return
 
-    status = await message.answer("⏳ Смотрю видео на YouTube…")
+    status = await message.answer(tr(message, "⏳ Смотрю видео на YouTube…"))
     tmp_path: Optional[Path] = None
 
     try:
@@ -85,15 +86,15 @@ async def youtube_handler(message: Message):
             except Exception as e:
                 await _log_yt_err(message.bot, "probe", uid, label, url, e)
                 with contextlib.suppress(Exception):
-                    await status.edit_text("❌ Не удалось получить это видео. Проверь ссылку — может, оно приватное/удалено.")
+                    await status.edit_text(tr(message, "❌ Не удалось получить это видео. Проверь ссылку — может, оно приватное/удалено."))
                 return
 
             duration = int(info.get("duration") or 0)
             if duration and duration > YOUTUBE_MAX_DURATION_SEC:
                 with contextlib.suppress(Exception):
                     await status.edit_text(
-                        f"❌ Видео слишком длинное ({duration // 60} мин). "
-                        f"Лимит: {YOUTUBE_MAX_DURATION_SEC // 60} мин."
+                        tr(message, "❌ Видео слишком длинное ({m} мин). Лимит: {l} мин.",
+                           m=duration // 60, l=YOUTUBE_MAX_DURATION_SEC // 60)
                     )
                 return
 
@@ -116,15 +117,13 @@ async def youtube_handler(message: Message):
                 note = (
                     ""
                     if ffmpeg_available()
-                    else "\n\n⚠️ На сервере не найден ffmpeg — реально скачается максимум ~720p, "
-                    "даже если выбрать качество выше (YouTube не отдаёт готовые файлы в высоком "
-                    "качестве без склейки видео и звука)."
+                    else tr(message, "\n\n⚠️ На сервере не найден ffmpeg — реально скачается максимум ~720p, даже если выбрать качество выше.")
                 )
                 await status.edit_text(
-                    "🎞️ <b>Выбери качество видео</b>\n\nЧем выше качество — тем дольше скачивание и больше файл."
+                    tr(message, "🎞️ <b>Выбери качество видео</b>\n\nЧем выше качество — тем дольше скачивание и больше файл.")
                     + note,
                     parse_mode="HTML",
-                    reply_markup=quality_choice_kb(req_id, qualities),
+                    reply_markup=quality_choice_kb(req_id, qualities, get_lang(uid)),
                 )
 
     finally:

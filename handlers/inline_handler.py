@@ -45,6 +45,7 @@ from helpers import (
     is_instagram, is_vk, is_pinterest, extract_other_source_url,
 )
 from storage import store
+from i18n import tr
 from user_label import resolve_user_label
 from limiters import lim
 from youtube_provider import probe_media, download_media
@@ -52,6 +53,7 @@ from download_nudge import after_download_hooks
 from logging_channel import log_event, format_user_for_log
 from helpers import html_escape, code, clamp_reason, exc_type_name
 from send_helpers import fit_video_to_limit
+from video_meta import prepare_video_kwargs, cleanup_video_kwargs, telegram_kwargs
 from youtube_provider import ffmpeg_available
 
 # Сколько максимум ждём скачивание НОВОЙ (некэшированной) ссылки внутри
@@ -151,7 +153,11 @@ async def _download_and_cache(platform: str, url: str, uid: int) -> str:
         # получить постоянный file_id — его же используем и для ответа
         # сейчас, и для кэша на будущее (повторные запросы этой ссылки
         # больше не будут качать заново). В админ-логи это НЕ попадает.
-        cache_msg = await bot.send_video(INLINE_CACHE_CHANNEL_ID, FSInputFile(tmp_path))
+        meta = await prepare_video_kwargs(tmp_path)
+        try:
+            cache_msg = await bot.send_video(INLINE_CACHE_CHANNEL_ID, FSInputFile(tmp_path), **telegram_kwargs(meta))
+        finally:
+            cleanup_video_kwargs(meta)
         file_id = cache_msg.video.file_id
         store.set_inline_cache(_cache_key(url), file_id, kind="video")
 
@@ -208,7 +214,7 @@ async def inline_handler(inline_query: InlineQuery):
             id=f"c:{key}",
             video_file_id=cached["file_id"],
             title="✅ Готово — отправить видео",
-            caption=CAPTION_VIDEO,
+            caption=tr(uid, CAPTION_VIDEO),
             parse_mode="HTML",
         )
         await inline_query.answer([result], cache_time=300, is_personal=False)
@@ -265,7 +271,7 @@ async def inline_handler(inline_query: InlineQuery):
         id=f"n:{key}",
         video_file_id=file_id,
         title="✅ Готово — отправить видео",
-        caption=CAPTION_VIDEO,
+        caption=tr(uid, CAPTION_VIDEO),
         parse_mode="HTML",
     )
     await inline_query.answer([result], cache_time=300, is_personal=False)

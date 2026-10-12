@@ -34,6 +34,7 @@ from helpers import (
     extract_other_source_url,
 )
 from storage import store
+from i18n import tr, get_lang
 from user_label import resolve_user_label
 from gates import gate_message
 from limiters import lim, download_sem
@@ -105,11 +106,11 @@ async def other_sources_handler(message: Message):
 
     ok_dl, wait_dl = lim.dl_hit(uid)
     if not ok_dl:
-        await message.answer(MSG_DL.format(n=wait_dl))
+        await message.answer(tr(message, MSG_DL, n=wait_dl))
         await add_download_strike(message.bot, uid, label, "Лимит скачиваний", src=url)
         return
 
-    status = await message.answer(f"⏳ Смотрю {platform_name}…")
+    status = await message.answer(tr(message, "⏳ Смотрю {p}…", p=platform_name))
     tmp_path: Optional[Path] = None
 
     try:
@@ -120,9 +121,7 @@ async def other_sources_handler(message: Message):
                 await _log_err(message.bot, platform, "probe", uid, label, url, e)
                 with contextlib.suppress(Exception):
                     await status.edit_text(
-                        f"❌ Не удалось получить видео с {platform_name}.\n"
-                        "Возможно, пост закрытый/приватный или требует входа в аккаунт — "
-                        "такое, увы, не скачать."
+                        tr(message, "❌ Не удалось получить видео с {p}.\nВозможно, пост закрытый/приватный или требует входа в аккаунт — такое, увы, не скачать.", p=platform_name)
                     )
                 return
 
@@ -130,8 +129,8 @@ async def other_sources_handler(message: Message):
             if duration and duration > YOUTUBE_MAX_DURATION_SEC:
                 with contextlib.suppress(Exception):
                     await status.edit_text(
-                        f"❌ Видео слишком длинное ({duration // 60} мин). "
-                        f"Лимит: {YOUTUBE_MAX_DURATION_SEC // 60} мин."
+                        tr(message, "❌ Видео слишком длинное ({m} мин). Лимит: {l} мин.",
+                           m=duration // 60, l=YOUTUBE_MAX_DURATION_SEC // 60)
                     )
                 return
 
@@ -154,14 +153,13 @@ async def other_sources_handler(message: Message):
                 note = (
                     ""
                     if ffmpeg_available()
-                    else "\n\n⚠️ На сервере не найден ffmpeg — реально скачается максимум ~720p, "
-                    "даже если выбрать качество выше."
+                    else tr(message, "\n\n⚠️ На сервере не найден ffmpeg — реально скачается максимум ~720p, даже если выбрать качество выше.")
                 )
                 await status.edit_text(
-                    "🎞️ <b>Выбери качество видео</b>\n\nЧем выше качество — тем дольше скачивание и больше файл."
+                    tr(message, "🎞️ <b>Выбери качество видео</b>\n\nЧем выше качество — тем дольше скачивание и больше файл.")
                     + note,
                     parse_mode="HTML",
-                    reply_markup=quality_choice_kb(req_id, qualities),
+                    reply_markup=quality_choice_kb(req_id, qualities, get_lang(uid)),
                 )
 
     finally:

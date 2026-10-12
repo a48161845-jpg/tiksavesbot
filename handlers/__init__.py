@@ -15,6 +15,7 @@ from . import admin_commands
 from . import admin_callbacks
 from . import donate_callbacks
 from . import help_callbacks
+from . import settings_handler
 from . import picker_callbacks
 from . import video_choice_callbacks
 from . import quality_callbacks

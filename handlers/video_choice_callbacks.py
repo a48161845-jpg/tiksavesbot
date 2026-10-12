@@ -16,6 +16,7 @@ import globals_state
 from config import CAPTION_VIDEO
 from helpers import code
 from storage import store
+from i18n import tr, get_lang
 from user_label import resolve_user_label
 from gates import gate_callback
 from logging_channel import log_event, format_user_for_log
@@ -36,7 +37,7 @@ async def video_choice_cb(call: CallbackQuery):
     cleanup_pending_video()
     st = pending_video.get(uid)
     if not st:
-        await call.answer("⏱️ Выбор устарел. Скинь ссылку ещё раз.", show_alert=True)
+        await call.answer(tr(uid, "⏱️ Выбор устарел. Скинь ссылку ещё раз."), show_alert=True)
         with contextlib.suppress(Exception):
             if call.message:
                 await call.message.delete()
@@ -45,7 +46,7 @@ async def video_choice_cb(call: CallbackQuery):
     action = (call.data or "").split(":", 1)[-1]
     if action == "cancel":
         pending_video.pop(uid, None)
-        await call.answer("Ок.")
+        await call.answer(tr(uid, "Ок."))
         with contextlib.suppress(Exception):
             if call.message:
                 await call.message.delete()
@@ -57,7 +58,7 @@ async def video_choice_cb(call: CallbackQuery):
 
     if action == "music":
         pending_video.pop(uid, None)
-        await call.answer("Отправляю музыку…")
+        await call.answer(tr(uid, "Отправляю музыку…"))
         if globals_state.g_provider:
             await send_music_if_any(call.message, globals_state.g_provider, st.get("music"), uid=uid, label=label, src=st.get("src"))
         with contextlib.suppress(Exception):
@@ -66,7 +67,7 @@ async def video_choice_cb(call: CallbackQuery):
 
     if action == "video":
         pending_video.pop(uid, None)
-        await call.answer("Отправляю видео…")
+        await call.answer(tr(uid, "Отправляю видео…"))
         if globals_state.g_provider:
             has_music = bool(st.get("music"))
             req_id = new_req_id()
@@ -82,8 +83,8 @@ async def video_choice_cb(call: CallbackQuery):
                 call.message,
                 globals_state.g_provider,
                 st.get("video"),
-                CAPTION_VIDEO,
-                reply_markup=under_video_kb(has_music=has_music, req_id=req_id),
+                tr(uid, CAPTION_VIDEO),
+                reply_markup=under_video_kb(has_music=has_music, req_id=req_id, lang=get_lang(uid)),
             )
             store.inc_download(uid, "video", items=1, source="tiktok")
             await log_event(

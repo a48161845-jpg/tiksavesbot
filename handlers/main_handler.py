@@ -38,6 +38,7 @@ from helpers import (
     resolve_tiktok_redirect,
 )
 from storage import store
+from i18n import tr, get_lang
 from user_label import resolve_user_label
 from gates import gate_message
 from limiters import lim, download_sem
@@ -45,6 +46,7 @@ from logging_channel import log_event, format_user_for_log
 from strikes import add_download_strike
 from providers import TikWMClient, ProviderSwitcher
 from send_helpers import send_video_smart, fit_video_to_limit
+from video_meta import prepare_video_kwargs, cleanup_video_kwargs, telegram_kwargs
 from picker_state import pending, cleanup_pending, video_extras, new_req_id, cleanup_video_extras, photo_mode_choice_kb
 from keyboards import under_video_kb
 from donate import waiting_stars_amount, send_stars_invoice
@@ -65,7 +67,7 @@ async def _tiktok_ytdlp_fallback(message: Message, uid: int, label: str, url: st
     tmp_path: Optional[Path] = None
     try:
         with contextlib.suppress(Exception):
-            await status.edit_text("⏳ Основной способ сейчас недоступен, пробую запасной…")
+            await status.edit_text(tr(message, "⏳ Основной способ сейчас недоступен, пробую запасной…"))
 
         tmp_path, _info = await ytdlp_download_media(url, Path("."))
 
@@ -73,7 +75,7 @@ async def _tiktok_ytdlp_fallback(message: Message, uid: int, label: str, url: st
             raise RuntimeError("yt-dlp: скачанный файл пустой или не найден")
 
         with contextlib.suppress(Exception):
-            await status.edit_text("📤 Отправляю…")
+            await status.edit_text(tr(message, "📤 Отправляю…"))
 
         orig_path = tmp_path
         tmp_path = await fit_video_to_limit(orig_path)
@@ -82,19 +84,24 @@ async def _tiktok_ytdlp_fallback(message: Message, uid: int, label: str, url: st
                 orig_path.unlink(missing_ok=True)
 
         req_id = new_req_id()
+        meta = await prepare_video_kwargs(tmp_path)
         try:
-            await message.answer_video(
-                FSInputFile(tmp_path),
-                caption=CAPTION_VIDEO,
-                parse_mode="HTML",
-                reply_markup=under_video_kb(has_music=False, has_description=False, req_id=req_id),
-            )
-        except Exception:
-            await message.answer_document(
-                FSInputFile(tmp_path),
-                caption=CAPTION_VIDEO,
-                parse_mode="HTML",
-            )
+            try:
+                await message.answer_video(
+                    FSInputFile(tmp_path),
+                    caption=tr(message, CAPTION_VIDEO),
+                    parse_mode="HTML",
+                    reply_markup=under_video_kb(has_music=False, has_description=False, req_id=req_id, lang=get_lang(uid)),
+                    **telegram_kwargs(meta),
+                )
+            except Exception:
+                await message.answer_document(
+                    FSInputFile(tmp_path),
+                    caption=tr(message, CAPTION_VIDEO),
+                    parse_mode="HTML",
+                )
+        finally:
+            cleanup_video_kwargs(meta)
 
         store.inc_download(uid, "video", items=1, source="tiktok_ytdlp_fallback")
         await after_download_hooks(message.bot, uid, label)
@@ -164,7 +171,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
     if url:
         url = normalize_tiktok_url(url)
     if not url and not text.startswith("/"):
-        await message.answer("📎 Пришли ссылку на TikTok, YouTube, Instagram, VK или Pinterest.")
+        await message.answer(tr(message, "📎 Пришли ссылку на TikTok, YouTube, Instagram, VK или Pinterest."))
         return
 
     if text.startswith("/"):
@@ -172,7 +179,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
 
     ok_dl, wait_dl = lim.dl_hit(uid)
     if not ok_dl:
-        await message.answer(MSG_DL.format(n=wait_dl))
+        await message.answer(tr(message, MSG_DL, n=wait_dl))
         await add_download_strike(
             message.bot,
             uid,
@@ -182,7 +189,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
         )
         return
 
-    status = await message.answer("⏳ Скачиваю…")
+    status = await message.answer(tr(message, "⏳ Скачиваю…"))
 
     try:
         async with lim.user_dl_lock(uid), download_sem:
@@ -194,7 +201,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
                     if resolved and extract_tiktok_video_id(resolved):
                         url = resolved
             with contextlib.suppress(Exception):
-                await status.edit_text("⏳ Скачиваю…")
+                await status.edit_text(tr(message, "⏳ Скачиваю…"))
             try:
                 media, provider = await switcher.get_media(url or text, raw_url=url)
             except Exception:
@@ -219,7 +226,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
                 }
 
             if photos:
-                await message.answer(PHOTO_WARNING_TEXT, parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
+                await message.answer(tr(message, PHOTO_WARNING_TEXT), parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
 
                 cleanup_pending()
                 pending[req_id] = {
@@ -236,9 +243,9 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
                 }
                 with contextlib.suppress(Exception):
                     await status.edit_text(
-                        "📎 <b>В посте несколько фото</b>\n\nКак скачать?",
+                        tr(message, "📎 <b>В посте несколько фото</b>\n\nКак скачать?"),
                         parse_mode="HTML",
-                        reply_markup=photo_mode_choice_kb(req_id),
+                        reply_markup=photo_mode_choice_kb(req_id, get_lang(uid)),
                     )
                 return
 
@@ -250,9 +257,9 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
                 message,
                 provider,
                 video,
-                CAPTION_VIDEO,
+                tr(message, CAPTION_VIDEO),
                 status_msg=status,
-                reply_markup=under_video_kb(has_music=bool(music), has_description=bool(description), req_id=req_id),
+                reply_markup=under_video_kb(has_music=bool(music), has_description=bool(description), req_id=req_id, lang=get_lang(uid)),
             )
             store.inc_download(uid, "video", items=1, source="tiktok")
             await after_download_hooks(message.bot, uid, label)
@@ -272,7 +279,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
         reason = clamp_reason(e)
         store.inc_error("handler", e)
         with contextlib.suppress(Exception):
-            await status.edit_text("❌ Проблема с сетью/сервисом. Попробуй позже.")
+            await status.edit_text(tr(message, "❌ Проблема с сетью/сервисом. Попробуй позже."))
 
         await log_event(
             message.bot,
@@ -294,17 +301,17 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
         # Видео слишком большое — тихая ошибка, не логируем в канал
         if "file too large" in low:
             with contextlib.suppress(Exception):
-                await status.edit_text(f"❌ Файл больше лимита ({MAX_VIDEO_MB} МБ). Telegram не даёт боту отправлять файлы тяжелее.")
+                await status.edit_text(tr(message, "❌ Файл больше лимита ({mb} МБ). Telegram не даёт боту отправлять файлы тяжелее.", mb=MAX_VIDEO_MB))
             return
 
         store.inc_error("handler", e)
-        msg = "❌ Не удалось скачать. Попробуй позже."
+        msg = tr(message, "❌ Не удалось скачать. Попробуй позже.")
         if any(x in low for x in ["private", "приват", "недоступ", "unavailable"]):
-            msg = "❌ Видео приватное или недоступно."
+            msg = tr(message, "❌ Видео приватное или недоступно.")
         elif any(x in low for x in ["deleted", "удален", "removed", "not found"]):
-            msg = "❌ Видео удалено или не найдено."
+            msg = tr(message, "❌ Видео удалено или не найдено.")
         elif "url parsing" in low:
-            msg = "❌ Не удалось разобрать ссылку. Проверь ссылку и попробуй ещё раз."
+            msg = tr(message, "❌ Не удалось разобрать ссылку. Проверь ссылку и попробуй ещё раз.")
         with contextlib.suppress(Exception):
             await status.edit_text(msg)
 
