@@ -122,6 +122,7 @@ class Storage:
             "download_counters": {},  # uid_str -> общее кол-во скачиваний (для периодических напоминаний)
             "inline_cache": {},  # url_hash -> {"file_id","kind","ts"} — кэш для inline-режима
             "maintenance": {"enabled": False, "text": ""},  # технический режим (/tex)
+            "user_lang": {},  # uid_str -> "ru" | "en" | "uk" (язык интерфейса бота)
         }
 
     # ---------- async load ----------

@@ -15,10 +15,12 @@ from aiogram.types import Message, FSInputFile
 from config import CAPTION_VIDEO
 from helpers import normalize_description
 from storage import store
+from i18n import tr, get_lang
 from picker_state import video_extras, new_req_id, cleanup_video_extras
 from keyboards import under_video_kb
 from youtube_provider import has_audio_track
 from download_nudge import after_download_hooks
+from video_meta import prepare_video_kwargs, cleanup_video_kwargs, telegram_kwargs
 
 
 async def send_external_video(
@@ -53,16 +55,28 @@ async def send_external_video(
         }
 
     # Без имени/названия исходного поста — единый вид подписи, как у TikTok.
-    caption = CAPTION_VIDEO
-    kb = under_video_kb(has_music=has_music, has_description=bool(description), req_id=req_id)
+    caption = tr(uid, CAPTION_VIDEO)
+    kb = under_video_kb(has_music=has_music, has_description=bool(description), req_id=req_id, lang=get_lang(uid))
 
+    # Превью, размеры и длительность — иначе Telegram показывает чёрный квадрат.
+    meta = await prepare_video_kwargs(tmp_path)
     try:
-        await message.answer_video(FSInputFile(tmp_path), caption=caption, parse_mode="HTML", reply_markup=kb)
-    except Exception:
-        # Иногда попадается кодек/контейнер, который Telegram не принимает
-        # как "видео" — на такой случай шлём документом, чтобы человек
-        # всё равно получил файл (кнопки при этом сохраняются).
-        await message.answer_document(FSInputFile(tmp_path), caption=caption, parse_mode="HTML", reply_markup=kb)
+        try:
+            await message.answer_video(
+                FSInputFile(tmp_path), caption=caption, parse_mode="HTML", reply_markup=kb,
+                **telegram_kwargs(meta),
+            )
+        except Exception:
+            # Иногда попадается кодек/контейнер, который Telegram не принимает
+            # как "видео" — на такой случай шлём документом, чтобы человек
+            # всё равно получил файл (кнопки при этом сохраняются).
+            thumb = meta.get("thumbnail")
+            await message.answer_document(
+                FSInputFile(tmp_path), caption=caption, parse_mode="HTML", reply_markup=kb,
+                **({"thumbnail": thumb} if thumb else {}),
+            )
+    finally:
+        cleanup_video_kwargs(meta)
 
     store.inc_download(uid, "video", items=1, source=source)
     await after_download_hooks(message.bot, uid, label)

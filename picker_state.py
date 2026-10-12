@@ -19,6 +19,7 @@ from typing import Dict, Any, List
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import PENDING_TTL_SEC, PAGE_SIZE
+from i18n import tr, get_lang
 
 pending: Dict[str, Dict[str, Any]] = {}
 pending_video: Dict[int, Dict[str, Any]] = {}
@@ -31,13 +32,13 @@ def new_req_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def photo_mode_choice_kb(req_id: str) -> InlineKeyboardMarkup:
+def photo_mode_choice_kb(req_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
     """Меню перед пикером: скачать как отдельные фото или собрать всё в одно видео со звуком."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🖼️ Как фото", callback_data=f"pk:mode:photo:{req_id}"),
-                InlineKeyboardButton(text="🎬 Как видео", callback_data=f"pk:mode:video:{req_id}"),
+                InlineKeyboardButton(text=tr(lang, "🖼️ Как фото"), callback_data=f"pk:mode:photo:{req_id}"),
+                InlineKeyboardButton(text=tr(lang, "🎬 Как видео"), callback_data=f"pk:mode:video:{req_id}"),
             ]
         ]
     )
@@ -66,6 +67,7 @@ def cleanup_pending_video() -> None:
 
 def picker_kb(req_id: str) -> InlineKeyboardMarkup:
     st = pending[req_id]
+    lang = get_lang(int(st.get("uid") or 0))
     photos: List[str] = st["photos"]
     selected: set[int] = st["selected"]
     page: int = st["page"]
@@ -91,22 +93,22 @@ def picker_kb(req_id: str) -> InlineKeyboardMarkup:
     if row:
         rows.append(row)
 
-    rows.append([InlineKeyboardButton(text="✅ Выбрать страницу", callback_data=f"pk:selpage:{req_id}")])
-    rows.append([InlineKeyboardButton(text="🔽 Скачать всё", callback_data=f"pk:sendall:{req_id}")])
+    rows.append([InlineKeyboardButton(text=tr(lang, "✅ Выбрать страницу"), callback_data=f"pk:selpage:{req_id}")])
+    rows.append([InlineKeyboardButton(text=tr(lang, "🔽 Скачать всё"), callback_data=f"pk:sendall:{req_id}")])
 
     # Музыка/описание — тоже галочки (переключатели), а не мгновенная отправка:
     # выбираешь, что нужно, и жмёшь "Продолжить"/"Скачать всё" — всё уходит вместе.
     row2: List[InlineKeyboardButton] = []
     if st.get("music"):
         checked = "✅ " if st.get("want_music") else ""
-        row2.append(InlineKeyboardButton(text=f"{checked}🎵 Музыка", callback_data=f"pk:togmusic:{req_id}"))
+        row2.append(InlineKeyboardButton(text=f"{checked}{tr(lang, '🎵 Музыка')}", callback_data=f"pk:togmusic:{req_id}"))
     if st.get("description"):
         checked = "✅ " if st.get("want_description") else ""
-        row2.append(InlineKeyboardButton(text=f"{checked}📝 Описание", callback_data=f"pk:togdesc:{req_id}"))
+        row2.append(InlineKeyboardButton(text=f"{checked}{tr(lang, '📝 Описание')}", callback_data=f"pk:togdesc:{req_id}"))
     if row2:
         rows.append(row2)
 
-    rows.append([InlineKeyboardButton(text="🧹 Очистить", callback_data=f"pk:clr:{req_id}")])
+    rows.append([InlineKeyboardButton(text=tr(lang, "🧹 Очистить"), callback_data=f"pk:clr:{req_id}")])
 
     if pages > 1:
         rows.append(
@@ -119,7 +121,7 @@ def picker_kb(req_id: str) -> InlineKeyboardMarkup:
 
     rows.append(
         [
-            InlineKeyboardButton(text=f"➡️ Продолжить ({len(selected)})", callback_data=f"pk:go:{req_id}"),
+            InlineKeyboardButton(text=tr(lang, "➡️ Продолжить ({n})", n=len(selected)), callback_data=f"pk:go:{req_id}"),
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)

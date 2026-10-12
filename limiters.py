@@ -92,6 +92,9 @@ class Limiters:
         позволяет прислать несколько ссылок подряд, сами скачивания одного
         пользователя выполняются строго по одному, а не параллельно.
         """
+        if len(self._user_dl_locks) > 2000:
+            for k in [k for k, v in self._user_dl_locks.items() if not v.locked()]:
+                self._user_dl_locks.pop(k, None)
         lock = self._user_dl_locks.get(uid)
         if lock is None:
             lock = asyncio.Lock()

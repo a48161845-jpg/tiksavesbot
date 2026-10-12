@@ -37,7 +37,19 @@ _pinned_overview_task: Optional[asyncio.Task] = None
 _local_bot_api_proc = None
 
 
+def _janitor_temp_files():
+    import glob, os
+    for pat in ("tmp_video_*", "*.part", "cobalt_*", "inline_*", "*.audio.*", "*.ytdl"):
+        for f in glob.glob(pat):
+            try:
+                if os.path.isfile(f):
+                    os.remove(f)
+            except Exception:
+                pass
+
+
 async def main():
+    _janitor_temp_files()
     global _autosave_task, _monthly_task, _pinned_overview_task, _local_bot_api_proc, _ytdlp_update_task
 
     # 1) Инициализируем БД (создаём таблицы, мигрируем из JSON если нужно)

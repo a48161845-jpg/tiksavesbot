@@ -27,7 +27,9 @@ from config import (
 from helpers import html_escape, code, clamp_reason, exc_type_name
 from storage import store
 from providers import BaseProvider
+from i18n import tr
 from video_compress import compress_to_limit, CompressError
+from video_meta import prepare_video_kwargs, cleanup_video_kwargs, telegram_kwargs
 from youtube_provider import ffmpeg_available
 from logging_channel import log_event, format_user_for_log
 
@@ -110,19 +112,19 @@ async def send_video_smart(
         if not any(m in low for m in _URL_SEND_FAIL_MARKERS):
             raise
 
-        tmp = Path(f"tmp_video_{message.from_user.id}_{int(time.time())}.mp4")
+        tmp = Path(f"tmp_video_{message.chat.id}_{int(time.time()*1000)}.mp4")
         sendable: Optional[Path] = None
         progress_msg: Optional[Message] = status_msg
         try:
             if progress_msg:
                 with contextlib.suppress(Exception):
                     await progress_msg.edit_text(
-                        "⏳ <b>Скачиваю… понадобится немного больше времени...</b>",
+                        tr(message, "⏳ <b>Скачиваю… понадобится немного больше времени...</b>"),
                         parse_mode="HTML",
                     )
             else:
                 progress_msg = await message.answer(
-                    "⏳ <b>Скачиваю… понадобится немного больше времени...</b>",
+                    tr(message, "⏳ <b>Скачиваю… понадобится немного больше времени...</b>"),
                     parse_mode="HTML",
                 )
 
@@ -139,11 +141,18 @@ async def send_video_smart(
             if tmp.stat().st_size > MAX_VIDEO_BYTES and progress_msg:
                 with contextlib.suppress(Exception):
                     await progress_msg.edit_text(
-                        "🗜 <b>Видео тяжёлое — сжимаю, чтобы влезло в Telegram…</b>",
+                        tr(message, "🗜 <b>Видео тяжёлое — сжимаю, чтобы влезло в Telegram…</b>"),
                         parse_mode="HTML",
                     )
             sendable = await fit_video_to_limit(tmp)
-            await message.answer_video(FSInputFile(sendable), caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+            meta = await prepare_video_kwargs(sendable)
+            try:
+                await message.answer_video(
+                    FSInputFile(sendable), caption=caption, parse_mode="HTML", reply_markup=reply_markup,
+                    **telegram_kwargs(meta),
+                )
+            finally:
+                cleanup_video_kwargs(meta)
         except RuntimeError as e:
             if "file too large" in str(e).lower():
                 with contextlib.suppress(Exception):
@@ -179,7 +188,7 @@ async def send_music_if_any(
         return
     user_id = _audio_user_id(message, uid)
     try:
-        await message.answer_audio(music_url, caption=CAPTION_AUDIO, parse_mode="HTML")
+        await message.answer_audio(music_url, caption=tr(message, CAPTION_AUDIO), parse_mode="HTML")
         if uid is not None:
             store.inc_audio(uid, 1)
         if label is not None:
@@ -198,7 +207,7 @@ async def send_music_if_any(
         tmp = Path(f"tmp_audio_{user_id}_{int(time.time())}.mp3")
         try:
             await provider.download_to_file(music_url, tmp, MAX_AUDIO_BYTES, stage="audio")
-            await message.answer_audio(FSInputFile(tmp), caption=CAPTION_AUDIO, parse_mode="HTML")
+            await message.answer_audio(FSInputFile(tmp), caption=tr(message, CAPTION_AUDIO), parse_mode="HTML")
             if uid is not None:
                 store.inc_audio(uid, 1)
             if label is not None:
@@ -263,7 +272,7 @@ async def send_description_if_any(message: Message, description: Optional[str]) 
         # Раньше ошибка тут проглатывалась молча — пользователь ничего не видел.
         # Теперь сообщаем и логируем причину.
         with contextlib.suppress(Exception):
-            await message.answer("❌ Не удалось отправить описание. Попробуй ещё раз.")
+            await message.answer(tr(message, "❌ Не удалось отправить описание. Попробуй ещё раз."))
         with contextlib.suppress(Exception):
             await log_event(
                 message.bot,
@@ -300,7 +309,7 @@ async def send_external_audio(
     tmp_path: Optional[Path] = None
     try:
         tmp_path = await download_audio_only(src_url, Path("."))
-        await message.answer_audio(FSInputFile(tmp_path), caption=CAPTION_AUDIO, parse_mode="HTML")
+        await message.answer_audio(FSInputFile(tmp_path), caption=tr(message, CAPTION_AUDIO), parse_mode="HTML")
         if uid is not None:
             store.inc_audio(uid, 1)
         if label is not None:
@@ -315,7 +324,7 @@ async def send_external_audio(
             )
     except Exception as e:
         with contextlib.suppress(Exception):
-            await message.answer("❌ Не получилось скачать звук с этого видео.")
+            await message.answer(tr(message, "❌ Не получилось скачать звук с этого видео."))
         if label is not None:
             await log_event(
                 message.bot,

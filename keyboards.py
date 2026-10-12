@@ -9,6 +9,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import DONATIONALERTS_URL, BOT_SHARE_URL, STARS_MIN, STARS_MAX, MAX_VIDEO_MB
 from helpers import html_escape, code
+from i18n import tr
 
 # ================== STATS / TOP KEYBOARDS ==================
 def stats_kb() -> InlineKeyboardMarkup:
@@ -62,6 +63,7 @@ START_TEXT = (
     "🧭 <b>Полезное:</b>\n"
     "🧾 Помощь — /help\n"
     "📊 Моя статистика — /me\n"
+    "⚙️ Настройки — /settings\n"
     "💛 Поддержать проект — /donate\n"
     "🆘 Поддержка — /support"
 )
@@ -136,29 +138,29 @@ HELP_TEXT = (
     "📳 Inline-режим — помощь по скачиванию видео в Inline-режиме"
 )
 
-def help_kb() -> InlineKeyboardMarkup:
+def help_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🎬 Скачать видео", callback_data="help:video"),
-                InlineKeyboardButton(text="🖼️ Скачать фото", callback_data="help:photo"),
+                InlineKeyboardButton(text=tr(lang, "🎬 Скачать видео"), callback_data="help:video"),
+                InlineKeyboardButton(text=tr(lang, "🖼️ Скачать фото"), callback_data="help:photo"),
             ],
             [
-                InlineKeyboardButton(text="⚠️ Лимиты", callback_data="help:limits"),
-                InlineKeyboardButton(text="📳 Inline-режим", callback_data="help:inline"),
+                InlineKeyboardButton(text=tr(lang, "⚠️ Лимиты"), callback_data="help:limits"),
+                InlineKeyboardButton(text=tr(lang, "📳 Inline-режим"), callback_data="help:inline"),
             ],
             [
-                InlineKeyboardButton(text="❌ Закрыть", callback_data="help:close"),
+                InlineKeyboardButton(text=tr(lang, "❌ Закрыть"), callback_data="help:close"),
             ],
         ]
     )
 
-def help_section_kb() -> InlineKeyboardMarkup:
+def help_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="⬅️ Назад", callback_data="help:back"),
-                InlineKeyboardButton(text="❌ Закрыть", callback_data="help:close"),
+                InlineKeyboardButton(text=tr(lang, "⬅️ Назад"), callback_data="help:back"),
+                InlineKeyboardButton(text=tr(lang, "❌ Закрыть"), callback_data="help:close"),
             ]
         ]
     )
@@ -226,13 +228,13 @@ def post_download_kb() -> InlineKeyboardMarkup:
         ]
     )
 
-def under_video_kb(has_music: bool = False, has_description: bool = False, req_id: str = "") -> Optional[InlineKeyboardMarkup]:
+def under_video_kb(has_music: bool = False, has_description: bool = False, req_id: str = "", lang: str = "ru") -> Optional[InlineKeyboardMarkup]:
     """Кнопки под скачанным видео: Музыка (если есть), Описание (если есть). Без доната/поделиться."""
     row: List[InlineKeyboardButton] = []
     if has_music:
-        row.append(InlineKeyboardButton(text="🎵 Музыка", callback_data=f"dl:audio:{req_id}"))
+        row.append(InlineKeyboardButton(text=tr(lang, "🎵 Музыка"), callback_data=f"dl:audio:{req_id}"))
     if has_description:
-        row.append(InlineKeyboardButton(text="📝 Описание", callback_data=f"dl:desc:{req_id}"))
+        row.append(InlineKeyboardButton(text=tr(lang, "📝 Описание"), callback_data=f"dl:desc:{req_id}"))
 
     if not row:
         return None
@@ -244,10 +246,10 @@ def _fmt_size(num_bytes) -> str:
     mb = num_bytes / (1024 * 1024)
     if mb < 1:
         return ""
-    return f" (~{mb:.0f} МБ)" if mb < 1024 else f" (~{mb/1024:.1f} ГБ)"
+    return f" (~{mb:.0f} МБ)" if mb < 1024 else f" (~{mb/1024:.1f} ГБ)"  # единицы переводит quality_choice_kb
 
 
-def quality_choice_kb(req_id: str, qualities: List[dict]) -> InlineKeyboardMarkup:
+def quality_choice_kb(req_id: str, qualities: List[dict], lang: str = "ru") -> InlineKeyboardMarkup:
     """
     Кнопки выбора качества перед скачиванием видео из YouTube/Instagram/VK/
     Pinterest: одна кнопка на каждое доступное разрешение (2 в ряд) плюс
@@ -265,18 +267,18 @@ def quality_choice_kb(req_id: str, qualities: List[dict]) -> InlineKeyboardMarku
     if row:
         rows.append(row)
 
-    rows.append([InlineKeyboardButton(text="✨ Лучшее качество", callback_data=f"q:v:0:{req_id}")])
-    rows.append([InlineKeyboardButton(text="🎵 Только звук (MP3)", callback_data=f"q:a:0:{req_id}")])
-    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"q:x:0:{req_id}")])
+    rows.append([InlineKeyboardButton(text=tr(lang, "✨ Лучшее качество"), callback_data=f"q:v:0:{req_id}")])
+    rows.append([InlineKeyboardButton(text=tr(lang, "🎵 Только звук (MP3)"), callback_data=f"q:a:0:{req_id}")])
+    rows.append([InlineKeyboardButton(text=tr(lang, "❌ Отмена"), callback_data=f"q:x:0:{req_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def video_choice_kb() -> InlineKeyboardMarkup:
+def video_choice_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     """Только «Скачать видео» и «Отмена» — кнопка музыки перенесена под видео."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🎬 Скачать видео", callback_data="vd:video")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="vd:cancel")],
+            [InlineKeyboardButton(text=tr(lang, "🎬 Скачать видео"), callback_data="vd:video")],
+            [InlineKeyboardButton(text=tr(lang, "❌ Отмена"), callback_data="vd:cancel")],
         ]
     )
 

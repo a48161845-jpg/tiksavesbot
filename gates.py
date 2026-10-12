@@ -9,6 +9,7 @@ from aiogram.types import Message, CallbackQuery
 from config import MSG_SPAM, BAN_REASON_SPAM, log
 from helpers import html_escape, plain, is_admin, is_chatty_message
 from storage import store
+from i18n import tr
 from limiters import lim
 from logging_channel import log_event, format_user_for_log
 from strikes import add_spam_strike, ban_message
@@ -50,7 +51,7 @@ async def gate_message(message: Message, label: str) -> bool:
         return True
 
     if store.is_maintenance():
-        with_html = "🛠 <b>Технические работы</b>\n\n" + html_escape(store.get_maintenance_text())
+        with_html = tr(uid, "🛠 <b>Технические работы</b>") + "\n\n" + html_escape(store.get_maintenance_text())
         await message.answer(with_html, parse_mode="HTML")
         return False
 
@@ -72,7 +73,7 @@ async def gate_message(message: Message, label: str) -> bool:
 
         log.info("gate_message: spam limit uid=%s wait=%s", uid, wait)
         if lim.spam_can_warn(uid):
-            await message.answer(MSG_SPAM.format(n=wait), parse_mode="HTML")
+            await message.answer(tr(uid, MSG_SPAM, n=wait), parse_mode="HTML")
         return False
 
     return True
@@ -92,7 +93,7 @@ async def gate_callback(call: CallbackQuery, label: str) -> bool:
                     f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
                 ],
             )
-        await call.answer("Вы в бане.", show_alert=True)
+        await call.answer(tr(uid, "Вы в бане."), show_alert=True)
         return False
 
     if is_admin(uid):
@@ -113,9 +114,9 @@ async def gate_callback(call: CallbackQuery, label: str) -> bool:
     if started_cd_now:
         until_ban = await add_spam_strike(call.bot, uid, label, "Флуд/слишком часто (кнопки)")
         if until_ban:
-            await call.answer("Бан за флуд.", show_alert=True)
+            await call.answer(tr(uid, "Бан за флуд."), show_alert=True)
             return False
 
     log.info("gate_callback: spam limit uid=%s wait=%s data=%s", uid, wait, data[:50] if data else "")
-    await call.answer(plain(MSG_SPAM.format(n=wait)), show_alert=True)
+    await call.answer(plain(tr(uid, MSG_SPAM, n=wait)), show_alert=True)
     return False
