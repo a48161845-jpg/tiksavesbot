@@ -1,0 +1,383 @@
+"""
+Callback-обработчик фото-пикера: пагинация/выбор отдельных фото, музыка/
+описание (галочки-переключатели), скачивание выбранного/всего.
+
+callback_data начинается на "pk:" и всегда содержит req_id — уникальный
+идентификатор конкретного сообщения-пикера (НЕ uid!). Это важно: если
+пользователь пришлёт несколько ссылок на слайдшоу подряд, у него может быть
+открыто сразу несколько пикеров одновременно — раньше состояние хранилось
+по uid, и второй пикер перезаписывал данные первого, отчего кнопки под
+старым сообщением путали/сбрасывали чужой выбор.
+"""
+import contextlib
+import time
+from pathlib import Path
+
+from aiogram import F
+from aiogram.types import CallbackQuery, FSInputFile
+
+from globals_state import dp
+import globals_state
+from video_meta import prepare_video_kwargs, cleanup_video_kwargs, telegram_kwargs
+from config import PAGE_SIZE, MSG_DL, MSG_PHOTO, CAPTION_PHOTO, CAPTION_VIDEO
+from helpers import code, is_admin, plain, exc_type_name, clamp_reason, html_escape
+from storage import store
+from i18n import tr, get_lang
+from user_label import resolve_user_label
+from limiters import lim
+from logging_channel import log_event, format_user_for_log
+from strikes import add_download_strike
+from send_helpers import send_photos, send_music_if_any, send_description_if_any
+from download_nudge import after_download_hooks
+from picker_state import pending, cleanup_pending, picker_kb, video_extras, new_req_id, cleanup_video_extras
+from keyboards import post_download_kb, under_video_kb
+from photo_video import build_photo_slideshow_video
+
+
+async def _send_photos_as_video(call: CallbackQuery, st: dict, uid: int, label: str) -> None:
+    """Режим "🎬 Как видео": собирает фото+музыку в MP4 и шлёт как обычное видео с кнопками Музыка/Описание."""
+    photo_urls = list(st.get("photos") or [])
+    session = getattr(globals_state.g_provider, "session", None)
+    if not photo_urls or not session:
+        with contextlib.suppress(Exception):
+            await call.message.answer(tr(uid, "❌ Не получилось собрать видео — попробуй ещё раз."))
+        return
+
+    status = None
+    with contextlib.suppress(Exception):
+        status = await call.message.answer(tr(uid, "🎬 Собираю видео из фото, подожди немного…"))
+
+    name_prefix = f"slideshow_{uid}_{int(time.time())}"
+    out_path: Path = None
+    try:
+        try:
+            out_path = await build_photo_slideshow_video(
+                session, photo_urls, st.get("music"), Path("."), name_prefix,
+                live=st.get("live"), bot=call.bot, chat_id=call.message.chat.id,
+            )
+        except Exception as first_e:
+            # ссылки на фото подписаны и быстро протухают / режутся CDN — берём свежие у провайдера и пробуем ещё раз
+            switcher = globals_state.g_switcher
+            src = st.get("src")
+            if not (switcher and src):
+                raise
+            fresh, _prov = await switcher.get_media(src, raw_url=src)
+            if not fresh.photos:
+                raise first_e
+            out_path = await build_photo_slideshow_video(
+                session, list(fresh.photos), fresh.music or st.get("music"), Path("."), name_prefix,
+                live=fresh.live or st.get("live"), bot=call.bot, chat_id=call.message.chat.id,
+            )
+
+        description = st.get("description")
+        req_id = new_req_id()
+        cleanup_video_extras()
+        if st.get("music") or description:
+            video_extras[req_id] = {
+                "music": st.get("music"), "description": description,
+                "src": st.get("src"), "uid": uid, "ts": time.time(),
+            }
+
+        with contextlib.suppress(Exception):
+            if status:
+                await status.delete()
+
+        meta = await prepare_video_kwargs(out_path)
+        try:
+            await call.message.answer_video(
+                FSInputFile(out_path), caption=tr(uid, CAPTION_VIDEO), parse_mode="HTML",
+                reply_markup=under_video_kb(has_music=bool(st.get("music")), has_description=bool(description), req_id=req_id, lang=get_lang(uid)),
+                **telegram_kwargs(meta),
+            )
+        finally:
+            cleanup_video_kwargs(meta)
+        store.inc_download(uid, "video", items=1, source="tiktok", url=str(st.get("src") or ""))
+        await after_download_hooks(call.bot, uid, label)
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            msg = tr(uid, "❌ Не получилось собрать видео из фото. Попробуй ещё раз позже.")
+            if status:
+                await status.edit_text(msg)
+            else:
+                await call.message.answer(msg)
+        with contextlib.suppress(Exception):
+            await log_event(
+                call.bot, "dlerr",
+                [
+                    "❌ Категория: <b>Ошибка сборки фото-видео</b>",
+                    f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
+                    f"🧬 Тип: <b>{html_escape(exc_type_name(e))}</b>",
+                    f"🧨 Причина: <b>{html_escape(clamp_reason(e))}</b>",
+                ],
+            )
+    finally:
+        if out_path:
+            with contextlib.suppress(Exception):
+                out_path.unlink(missing_ok=True)
+
+
+@dp.callback_query(F.data.startswith("pk:"))
+async def picker_cb(call: CallbackQuery):
+    uid = call.from_user.id
+    label = await resolve_user_label(call.bot, uid)
+    store.set_user_label(uid, label)
+
+    ban = store.get_ban(uid)
+    if ban:
+        await call.answer(tr(uid, "Вы в бане."), show_alert=True)
+        return
+
+    if not is_admin(uid) and store.is_maintenance():
+        await call.answer(plain(store.get_maintenance_text()), show_alert=True)
+        return
+
+    cleanup_pending()
+
+    parts = (call.data or "").split(":")
+    act = parts[1] if len(parts) > 1 else ""
+
+    if act == "mode":
+        mode = parts[2] if len(parts) > 2 else ""
+        req_id = parts[3] if len(parts) > 3 else ""
+        st = pending.get(req_id)
+        if not st:
+            await call.answer(tr(uid, "⏱️ Выбор устарел. Скинь ссылку ещё раз."), show_alert=True)
+            with contextlib.suppress(Exception):
+                if call.message:
+                    await call.message.delete()
+            return
+        if st.get("uid") != uid:
+            await call.answer(tr(uid, "Это не твой выбор фото."), show_alert=True)
+            return
+
+        if mode == "photo":
+            await call.answer()
+            with contextlib.suppress(Exception):
+                await call.message.edit_text(tr(uid, "🖼️ Выбери фото по номерам или выдели страницу 👇"), reply_markup=picker_kb(req_id))
+            return
+
+        if mode == "video":
+            ok, wait = lim.dl_hit(uid)
+            if not ok:
+                await call.message.answer(tr(uid, MSG_DL, n=wait), parse_mode="HTML")
+                await add_download_strike(call.bot, uid, label, "Лимит скачиваний", src=st.get("src"))
+                await call.answer()
+                return
+            pending.pop(req_id, None)
+            with contextlib.suppress(Exception):
+                await call.message.delete()
+            await call.answer(tr(uid, "Собираю видео…"))
+            await _send_photos_as_video(call, st, uid, label)
+            return
+
+        await call.answer()
+        return
+
+    req_id = parts[2] if len(parts) > 2 else ""
+
+    st = pending.get(req_id)
+    if not st:
+        await call.answer(tr(uid, "⏱️ Выбор устарел. Скинь ссылку ещё раз."), show_alert=True)
+        with contextlib.suppress(Exception):
+            if call.message:
+                await call.message.delete()
+        return
+
+    if st.get("uid") != uid:
+        await call.answer(tr(uid, "Это не твой выбор фото."), show_alert=True)
+        return
+
+    if not call.message:
+        await call.answer()
+        return
+
+    async def gate_download() -> bool:
+        ok, wait = lim.dl_hit(uid)
+        if ok:
+            return True
+        await call.message.answer(tr(uid, MSG_DL, n=wait), parse_mode="HTML")
+        await add_download_strike(
+            call.bot,
+            uid,
+            label,
+            "Лимит скачиваний",
+            src=st.get("src"),
+        )
+        return False
+
+    async def gate_photo_volume(photos_cnt: int, src: str) -> bool:
+        ok, wait = lim.photo_hit(uid, photos_cnt)
+        if ok:
+            return True
+
+        await call.message.answer(tr(uid, MSG_PHOTO, n=wait), parse_mode="HTML")
+        await add_download_strike(
+            call.bot,
+            uid,
+            label,
+            "Лимит фото",
+            src=src,
+        )
+        return False
+
+    if act == "n":
+        await call.answer()
+        return
+
+    if act == "cn":
+        pending.pop(req_id, None)
+        await call.answer(tr(uid, "Ок."))
+        with contextlib.suppress(Exception):
+            await call.message.delete()
+        return
+
+    if act == "pg":
+        step = parts[3] if len(parts) > 3 else "+1"
+        total = len(st["photos"])
+        pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+        st["page"] = (st["page"] + (-1 if step == "-1" else 1)) % pages
+        await call.answer()
+        await call.message.edit_reply_markup(reply_markup=picker_kb(req_id))
+        return
+
+    if act == "t":
+        idx = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else -1
+        if 0 <= idx < len(st["photos"]):
+            sel: set[int] = st["selected"]
+            if idx in sel:
+                sel.remove(idx)
+            else:
+                sel.add(idx)
+        await call.answer()
+        await call.message.edit_reply_markup(reply_markup=picker_kb(req_id))
+        return
+
+    if act == "clr":
+        st["selected"].clear()
+        st["want_music"] = False
+        st["want_description"] = False
+        await call.answer(tr(uid, "🧹 Очищено"))
+        await call.message.edit_reply_markup(reply_markup=picker_kb(req_id))
+        return
+
+    if act == "selpage":
+        page = st["page"]
+        total = len(st["photos"])
+        start = page * PAGE_SIZE
+        end = min(start + PAGE_SIZE, total)
+        sel: set[int] = st["selected"]
+        for i in range(start, end):
+            sel.add(i)
+        await call.answer(tr(uid, "✅ Страница выбрана!"))
+        await call.message.edit_reply_markup(reply_markup=picker_kb(req_id))
+        return
+
+    if act == "togmusic":
+        if st.get("music"):
+            st["want_music"] = not st.get("want_music", False)
+        await call.answer(tr(uid, "🎵 Музыка добавлена") if st.get("want_music") else tr(uid, "🎵 Музыка убрана"))
+        await call.message.edit_reply_markup(reply_markup=picker_kb(req_id))
+        return
+
+    if act == "togdesc":
+        if st.get("description"):
+            st["want_description"] = not st.get("want_description", False)
+        await call.answer(tr(uid, "📝 Описание добавлено") if st.get("want_description") else tr(uid, "📝 Описание убрано"))
+        await call.message.edit_reply_markup(reply_markup=picker_kb(req_id))
+        return
+
+    if act == "sendall":
+        src = str(st.get("src", ""))
+        photos_all = list(st["photos"])
+        want_music = bool(st.get("want_music") and st.get("music"))
+        want_desc = bool(st.get("want_description") and st.get("description"))
+
+        if not await gate_download():
+            await call.answer()
+            return
+        if not await gate_photo_volume(len(photos_all), src):
+            await call.answer()
+            return
+
+        pending.pop(req_id, None)
+        with contextlib.suppress(Exception):
+            await call.message.delete()
+
+        await call.answer(tr(uid, "Отправляю всё…"))
+        cnt = await send_photos(call.message, photos_all, caption_html=tr(uid, CAPTION_PHOTO), live=st.get("live"))
+        store.inc_download(uid, "photo", items=cnt, source="tiktok", url=src)
+
+        if want_music and globals_state.g_provider:
+            await send_music_if_any(call.message, globals_state.g_provider, st.get("music"), uid=uid, label=label, src=src)
+        if want_desc:
+            await send_description_if_any(call.message, st.get("description"))
+            store.inc_description(uid)
+
+        if cnt:
+            await after_download_hooks(call.bot, uid, label)
+
+        await log_event(
+            call.bot,
+            "photodl",
+            [
+                "🖼️ Категория: <b>Скачивание фото (всё)</b>",
+                f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
+                f"🔗 Ссылка: {code(src)}",
+                f"📦 Кол-во фото: <b>{cnt}</b>",
+            ],
+        )
+        chat_id = call.message.chat.id if call.message else uid
+        await call.bot.send_message(chat_id, "👇", reply_markup=post_download_kb(get_lang(uid)))
+        return
+
+    if act == "go":
+        sel: set[int] = st["selected"]
+        want_music = bool(st.get("want_music") and st.get("music"))
+        want_desc = bool(st.get("want_description") and st.get("description"))
+        if not sel and not want_music and not want_desc:
+            await call.answer(tr(uid, "Выбери хотя бы одно фото (или галочку музыки/описания)."), show_alert=True)
+            return
+
+        src = str(st.get("src", ""))
+        chosen = [st["photos"][i] for i in sorted(sel)]
+
+        if not await gate_download():
+            await call.answer()
+            return
+        if chosen and not await gate_photo_volume(len(chosen), src):
+            await call.answer()
+            return
+
+        pending.pop(req_id, None)
+        with contextlib.suppress(Exception):
+            await call.message.delete()
+
+        await call.answer(tr(uid, "Отправляю…"))
+        cnt = 0
+        if chosen:
+            cnt = await send_photos(call.message, chosen, caption_html=tr(uid, CAPTION_PHOTO), live=st.get("live"))
+            store.inc_download(uid, "photo", items=cnt, source="tiktok", url=src)
+
+        if want_music and globals_state.g_provider:
+            await send_music_if_any(call.message, globals_state.g_provider, st.get("music"), uid=uid, label=label, src=src)
+        if want_desc:
+            await send_description_if_any(call.message, st.get("description"))
+            store.inc_description(uid)
+
+        if cnt:
+            await after_download_hooks(call.bot, uid, label)
+            await log_event(
+                call.bot,
+                "photodl",
+                [
+                    "🖼️ Категория: <b>Скачивание фото (выбор)</b>",
+                    f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
+                    f"🔗 Ссылка: {code(src)}",
+                    f"📦 Кол-во фото: <b>{cnt}</b>",
+                ],
+            )
+        chat_id = call.message.chat.id if call.message else uid
+        await call.bot.send_message(chat_id, "👇", reply_markup=post_download_kb(get_lang(uid)))
+        return
+
+    await call.answer()

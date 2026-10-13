@@ -1,0 +1,330 @@
+"""
+Основной обработчик текстовых сообщений: распознаёт TikTok-ссылку,
+скачивает медиа и отправляет видео/фото-пикер/музыку. Также обрабатывает
+ввод кастомной суммы донат-Stars, если пользователь её ожидает.
+
+client и switcher приходят через aiogram workflow_data (см. dp.start_polling
+в bot.py: client=primary, switcher=switcher) — aiogram сам инжектирует их
+в хендлер по совпадению имени параметра.
+"""
+import time
+import contextlib
+from pathlib import Path
+from typing import Optional
+
+import aiohttp
+from aiogram import F
+from aiogram.types import Message, LinkPreviewOptions, FSInputFile
+
+from globals_state import dp
+from config import (
+    STARS_MIN,
+    STARS_MAX,
+    WAITING_STARS_TTL_SEC,
+    MSG_DL,
+    CAPTION_VIDEO,
+    PHOTO_WARNING_TEXT,
+    MAX_VIDEO_MB,
+)
+from helpers import (
+    html_escape,
+    code,
+    clamp_reason,
+    exc_type_name,
+    extract_tiktok_url,
+    normalize_tiktok_url,
+    is_tiktok_short_url,
+    extract_tiktok_video_id,
+    resolve_tiktok_redirect,
+)
+from storage import store
+from i18n import tr, get_lang
+from user_label import resolve_user_label
+from gates import gate_message
+from limiters import lim, download_sem
+from logging_channel import log_event, format_user_for_log
+from strikes import add_download_strike
+from providers import TikWMClient, ProviderSwitcher
+from send_helpers import send_video_smart, fit_video_to_limit
+from video_meta import prepare_video_kwargs, cleanup_video_kwargs, telegram_kwargs
+from picker_state import pending, cleanup_pending, video_extras, new_req_id, cleanup_video_extras, photo_mode_choice_kb
+from keyboards import under_video_kb
+from donate import waiting_stars_amount, send_stars_invoice
+from download_nudge import after_download_hooks
+from youtube_provider import download_media as ytdlp_download_media
+
+
+async def _tiktok_ytdlp_fallback(message: Message, uid: int, label: str, url: str, status: Message) -> bool:
+    """
+    Запасной путь скачивания TikTok, когда основной провайдер (tikwm.com API)
+    недоступен/вернул пустой ответ (см. лог dlerr "Empty response body from
+    API" — это сбой их API, не бота). Вместо мгновенной ошибки пользователю —
+    пробуем скачать это же видео через yt-dlp напрямую с TikTok. Возвращает
+    True, если получилось скачать и отправить (тогда основной обработчик
+    просто завершает работу), False — если и это не удалось (тогда
+    показываем обычную ошибку, как раньше).
+    """
+    tmp_path: Optional[Path] = None
+    try:
+        with contextlib.suppress(Exception):
+            await status.edit_text(tr(message, "⏳ Основной способ сейчас недоступен, пробую запасной…"))
+
+        tmp_path, _info = await ytdlp_download_media(url, Path("."))
+
+        if not tmp_path.exists() or tmp_path.stat().st_size <= 0:
+            raise RuntimeError("yt-dlp: скачанный файл пустой или не найден")
+
+        with contextlib.suppress(Exception):
+            await status.edit_text(tr(message, "📤 Отправляю…"))
+
+        orig_path = tmp_path
+        tmp_path = await fit_video_to_limit(orig_path)
+        if tmp_path != orig_path:
+            with contextlib.suppress(Exception):
+                orig_path.unlink(missing_ok=True)
+
+        req_id = new_req_id()
+        meta = await prepare_video_kwargs(tmp_path)
+        try:
+            try:
+                await message.answer_video(
+                    FSInputFile(tmp_path),
+                    caption=tr(message, CAPTION_VIDEO),
+                    parse_mode="HTML",
+                    reply_markup=under_video_kb(has_music=False, has_description=False, req_id=req_id, lang=get_lang(uid)),
+                    **telegram_kwargs(meta),
+                )
+            except Exception:
+                await message.answer_document(
+                    FSInputFile(tmp_path),
+                    caption=tr(message, CAPTION_VIDEO),
+                    parse_mode="HTML",
+                )
+        finally:
+            cleanup_video_kwargs(meta)
+
+        store.inc_download(uid, "video", items=1, source="tiktok_ytdlp_fallback", url=url)
+        await after_download_hooks(message.bot, uid, label)
+        with contextlib.suppress(Exception):
+            await status.delete()
+        await log_event(
+            message.bot,
+            "videodl",
+            [
+                "🎬 Категория: <b>Скачивание TikTok (запасной способ, yt-dlp)</b>",
+                f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
+                f"🔗 Ссылка: {code(url)}",
+            ],
+        )
+        return True
+    except Exception as e:
+        store.inc_error("tiktok_ytdlp_fallback", e)
+        await log_event(
+            message.bot,
+            "dlerr",
+            [
+                "⚠️ Категория: <b>Запасной способ TikTok тоже не сработал</b>",
+                f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
+                f"🧬 Тип: <b>{html_escape(exc_type_name(e))}</b>",
+                f"🔗 Ссылка: {code(url)}",
+                f"🧨 Причина: <b>{html_escape(clamp_reason(e))}</b>",
+            ],
+        )
+        return False
+    finally:
+        if tmp_path:
+            with contextlib.suppress(Exception):
+                tmp_path.unlink(missing_ok=True)
+
+
+@dp.message(F.text)
+async def main_handler(message: Message, client: TikWMClient, switcher: ProviderSwitcher):
+    uid = message.from_user.id
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    label = await resolve_user_label(message.bot, uid)
+    store.set_user_label(uid, label)
+
+    if not await gate_message(message, label):
+        return
+
+    # custom stars amount
+    ts_wait = waiting_stars_amount.get(uid)
+    if ts_wait:
+        if time.time() - ts_wait > WAITING_STARS_TTL_SEC:
+            waiting_stars_amount.pop(uid, None)
+        else:
+            if text.isdigit():
+                stars = int(text)
+                if not (STARS_MIN <= stars <= STARS_MAX):
+                    await message.answer(tr(message, "❌ Сумма должна быть {a}–{b} ⭐", a=STARS_MIN, b=STARS_MAX))
+                    return
+                waiting_stars_amount.pop(uid, None)
+                await send_stars_invoice(message.bot, uid, stars, get_lang(uid))
+                return
+
+    store.register(uid)
+
+    url = extract_tiktok_url(text)
+    if url:
+        url = normalize_tiktok_url(url)
+    if not url and not text.startswith("/"):
+        await message.answer(tr(message, "📎 Пришли ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X, OK, Rutube или Reddit."))
+        return
+
+    if text.startswith("/"):
+        return
+
+    ok_dl, wait_dl = lim.dl_hit(uid)
+    if not ok_dl:
+        await message.answer(tr(message, MSG_DL, n=wait_dl))
+        await add_download_strike(
+            message.bot,
+            uid,
+            label,
+            "Лимит скачиваний",
+            src=url or text,
+        )
+        return
+
+    status = await message.answer(tr(message, "⏳ Скачиваю…"))
+
+    try:
+        async with lim.user_dl_lock(uid), download_sem:
+            # Короткие ссылки (vt./vm./tiktok.com/t/, новый tt.site/t/) раскрываем
+            # сразу — и tikwm, и запасной yt-dlp работают с полным URL надёжнее.
+            if url and is_tiktok_short_url(url):
+                with contextlib.suppress(Exception):
+                    resolved = normalize_tiktok_url(await resolve_tiktok_redirect(client.session, url))
+                    if resolved and extract_tiktok_video_id(resolved):
+                        url = resolved
+            with contextlib.suppress(Exception):
+                await status.edit_text(tr(message, "⏳ Скачиваю…"))
+            try:
+                media, provider = await switcher.get_media(url or text, raw_url=url)
+            except Exception:
+                # Основной провайдер (tikwm.com) не смог отдать медиа — прежде
+                # чем показывать ошибку, пробуем запасной путь через yt-dlp
+                # напрямую с TikTok (см. _tiktok_ytdlp_fallback выше).
+                if await _tiktok_ytdlp_fallback(message, uid, label, url or text, status):
+                    return
+                raise
+
+            video, photos, music = media.video, media.photos, media.music
+            description = media.description
+            req_id = new_req_id()
+            cleanup_video_extras()
+            if music or description:
+                video_extras[req_id] = {
+                    "music": music,
+                    "description": description,
+                    "src": url or text,
+                    "uid": uid,
+                    "ts": time.time(),
+                }
+
+            if photos:
+                await message.answer(tr(message, PHOTO_WARNING_TEXT), parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+                cleanup_pending()
+                pending[req_id] = {
+                    "uid": uid,
+                    "photos": photos,
+                    "live": media.live or {},
+                    "music": music,
+                    "description": description,
+                    "want_music": False,
+                    "want_description": False,
+                    "selected": set(),
+                    "page": 0,
+                    "ts": time.time(),
+                    "src": url or text,
+                }
+                with contextlib.suppress(Exception):
+                    await status.edit_text(
+                        tr(message, "📎 <b>В посте несколько фото</b>\n\nКак скачать?"),
+                        parse_mode="HTML",
+                        reply_markup=photo_mode_choice_kb(req_id, get_lang(uid)),
+                    )
+                return
+
+            if not video:
+                raise RuntimeError("No media links (video/photo missing)")
+
+            # Сразу отправляем видео; кнопка «Музыка» — под видео (если есть звук)
+            await send_video_smart(
+                message,
+                provider,
+                video,
+                tr(message, CAPTION_VIDEO),
+                status_msg=status,
+                reply_markup=under_video_kb(has_music=bool(music), has_description=bool(description), req_id=req_id, lang=get_lang(uid)),
+            )
+            store.inc_download(uid, "video", items=1, source="tiktok", url=url or text)
+            await after_download_hooks(message.bot, uid, label)
+            with contextlib.suppress(Exception):
+                await status.delete()
+            await log_event(
+                message.bot,
+                "videodl",
+                [
+                    "🎬 Категория: <b>Скачивание видео</b>",
+                    f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
+                    f"🔗 Ссылка: {code(url or text)}",
+                ],
+            )
+
+    except aiohttp.ClientError as e:
+        reason = clamp_reason(e)
+        store.inc_error("handler", e)
+        with contextlib.suppress(Exception):
+            await status.edit_text(tr(message, "❌ Проблема с сетью/сервисом. Попробуй позже."))
+
+        await log_event(
+            message.bot,
+            "dlerr",
+            [
+                "❌ Категория: <b>Ошибка скачивания</b>",
+                f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
+                "🧩 Стадия: <b>handler</b>",
+                f"🧬 Тип: <b>{html_escape(exc_type_name(e))}</b>",
+                f"🔗 Ссылка: {code(text)}",
+                f"🧨 Причина: <b>{html_escape(reason)}</b>",
+            ],
+        )
+
+    except Exception as e:
+        reason = clamp_reason(e)
+        low = reason.lower()
+
+        # Видео слишком большое — тихая ошибка, не логируем в канал
+        if "file too large" in low:
+            with contextlib.suppress(Exception):
+                await status.edit_text(tr(message, "❌ Файл больше лимита ({mb} МБ). Telegram не даёт боту отправлять файлы тяжелее.", mb=MAX_VIDEO_MB))
+            return
+
+        store.inc_error("handler", e)
+        msg = tr(message, "❌ Не удалось скачать. Попробуй позже.")
+        if any(x in low for x in ["private", "приват", "недоступ", "unavailable"]):
+            msg = tr(message, "❌ Видео приватное или недоступно.")
+        elif any(x in low for x in ["deleted", "удален", "removed", "not found"]):
+            msg = tr(message, "❌ Видео удалено или не найдено.")
+        elif "url parsing" in low:
+            msg = tr(message, "❌ Не удалось разобрать ссылку. Проверь ссылку и попробуй ещё раз.")
+        with contextlib.suppress(Exception):
+            await status.edit_text(msg)
+
+        await log_event(
+            message.bot,
+            "dlerr",
+            [
+                "❌ Категория: <b>Ошибка скачивания</b>",
+                f"👤 User/id: <b>{format_user_for_log(label, uid)}</b>",
+                "🧩 Стадия: <b>handler</b>",
+                f"🧬 Тип: <b>{html_escape(exc_type_name(e))}</b>",
+                f"🔗 Ссылка: {code(text)}",
+                f"🧨 Причина: <b>{html_escape(reason)}</b>",
+            ],
+        )
