@@ -210,10 +210,10 @@ async def inline_handler(inline_query: InlineQuery):
     if not query:
         hint = InlineQueryResultArticle(
             id="hint",
-            title=tr(uid, "Вставь ссылку на TikTok / YouTube / Instagram / VK / Pinterest / Likee / X / OK"),
+            title=tr(uid, "Вставь ссылку на TikTok / YouTube / Instagram / VK / Pinterest / Likee / X / OK / Rutube"),
             description=tr(uid, "Начни печатать — бот покажет результат прямо тут"),
             input_message_content=InputTextMessageContent(
-                message_text=tr(uid, "📎 Пришли мне ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X или OK — скачаю видео.")
+                message_text=tr(uid, "📎 Пришли мне ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X, OK или Rutube — скачаю видео.")
             ),
         )
         await inline_query.answer([hint], cache_time=1, is_personal=True)
@@ -224,7 +224,7 @@ async def inline_handler(inline_query: InlineQuery):
         not_found = InlineQueryResultArticle(
             id="notfound",
             title=tr(uid, "Ссылка не распознана"),
-            description=tr(uid, "Поддерживаются TikTok, YouTube, Instagram, VK, Pinterest, Likee, X, OK"),
+            description=tr(uid, "Поддерживаются TikTok, YouTube, Instagram, VK, Pinterest, Likee, X, OK, Rutube"),
             input_message_content=InputTextMessageContent(message_text=tr(uid, "❌ Не нашёл поддерживаемую ссылку в запросе.")),
         )
         await inline_query.answer([not_found], cache_time=1, is_personal=True)
