@@ -58,7 +58,7 @@ def top_kb() -> InlineKeyboardMarkup:
 START_TEXT = (
     "👋 <b>Привет! Я TikSaves</b>\n"
     "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "Скачиваю видео, фото-слайдшоу и музыку из TikTok, а ещё видео с YouTube (в т.ч. Shorts), Instagram, VK, Pinterest, Likee, X и OK.\n\n"
+    "Скачиваю видео, фото-слайдшоу и музыку из TikTok, а ещё видео с YouTube (в т.ч. Shorts), Instagram, VK, Pinterest, Likee, X, OK и Rutube.\n\n"
     "📎 <b>Просто пришли ссылку</b> — остальное сделаю сам, без водяных знаков и подписок.\n\n"
     "🧭 <b>Полезное:</b>\n"
     "🧾 Помощь — /help\n"
@@ -130,7 +130,7 @@ SHARE_TEXT = "🔥 Нашёл топового бота для скачиван�
 HELP_TEXT = (
     "🧾 <b>Помощь по TikSaves</b>\n"
     "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "📎 Просто пришли ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X или OK — бот сам предложит варианты.\n\n"
+    "📎 Просто пришли ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X, OK или Rutube — бот сам предложит варианты.\n\n"
     "🧭 <b>Кнопки помощи:</b>\n"
     "🎬 Скачать видео — помощь по скачиванию видео\n"
     "🖼️ Скачать фото — помощь по скачиванию фото\n"
@@ -169,8 +169,8 @@ HELP_SECTIONS = {
     "video": (
         "🎬 <b>Помощь по скачиванию видео</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "1️⃣ Пришли ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X или OK 📱\n\n"
-        "2️⃣ Для YouTube/Instagram/VK/Pinterest/Likee/X/OK выбери качество видео (или «Только звук») 🎚️\n\n"
+        "1️⃣ Пришли ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X, OK или Rutube 📱\n\n"
+        "2️⃣ Для YouTube/Instagram/VK/Pinterest/Likee/X/OK/Rutube выбери качество видео (или «Только звук») 🎚️\n\n"
         "3️⃣ Подожди несколько секунд пока скачивается видео ⏳\n\n"
         "4️⃣ Получай готовое видео в хорошем качестве без водяных знаков 🎉\n\n"
         f"⛔ При ошибке повтори попытку, при повторной ошибке напиши в /support"
@@ -204,7 +204,7 @@ HELP_SECTIONS = {
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "Скачивай видео не только в боте 🎉\n\n"
         "1️⃣ Введи в любом чате <code>@tiksavesbot</code>, подожди немного пока появится результат, "
-        "затем вставь ссылку на TikTok-слайдшоу или пришли ссылку на TikTok-видео, YouTube, Instagram, VK, Pinterest, Likee, X или OK\n\n"
+        "затем вставь ссылку на TikTok-слайдшоу или пришли ссылку на TikTok-видео, YouTube, Instagram, VK, Pinterest, Likee, X, OK или Rutube\n\n"
         "2️⃣ Подожди немного, пока загрузится видео или TikTok-слайдшоу\n\n"
         "3️⃣ Получай готовое видео в хорошем качестве без водяных знаков 🎉\n\n"
         f"⛔ При ошибке повтори попытку, при повторной ошибке напиши в /support"

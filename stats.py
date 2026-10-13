@@ -68,6 +68,7 @@ _SOURCE_LABELS = {
     "twitter": "🐦 X (Twitter)",
     "ok": "🟠 OK",
     "pinterest": "📌 Pinterest",
+    "rutube": "🟣 Rutube",
 }
 
 
@@ -80,6 +81,7 @@ _PLATFORM_ORDER = [
     ("likee", "💗 Likee"),
     ("twitter", "🐦 X (Twitter)"),
     ("ok", "🟠 OK"),
+    ("rutube", "🟣 Rutube"),
 ]
 
 

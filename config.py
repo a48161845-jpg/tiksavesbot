@@ -128,7 +128,23 @@ TWITTER_RE = re.compile(
     r"(https?://)?(www\.|mobile\.|m\.)?(twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com)/(?:i/web/|i/)?(?:[A-Za-z0-9_]+/)?status(?:es)?/\d+",
     re.I,
 )
-OK_RE = re.compile(r"(https?://)?(www\.|m\.)?ok\.ru/(video|videoembed|live|movie)/?\d+", re.I)
+# Одноклассники: ok.ru / m.ok.ru / odnoklassniki.ru; video/ID, videoembed/ID, live/ID, movie/ID,
+# а также profile/…/video/ID, group/…/video/ID, старые ссылки dk?st.cmd=movieLayer&st.mvId=ID и web-api/video/moviePlayer/ID.
+# Перед yt-dlp ссылка приводится к https://ok.ru/video/ID (см. helpers._norm_ok).
+_OK_HOST = r"(?:[a-z0-9-]+\.)?(?:ok\.ru|odnoklassniki\.ru)"
+OK_RE = re.compile(
+    r"(?<![\w.-])(?:https?://)?" + _OK_HOST + r"/(?:"
+    r"(?:[^\s?#]*?/)?(?:video|videoembed|live|movie|movies)/\d+"
+    r"|web-api/video/moviePlayer/\d+"
+    r"|dk\?[^\s]*?st\.mvId=\d+"
+    r")",
+    re.I,
+)
+# Rutube: video/<32 hex>, video/private/<id>, shorts/<id>, play/embed/<id>, embed/<id>
+RUTUBE_RE = re.compile(
+    r"(?<![\w.-])(?:https?://)?(?:www\.|m\.)?rutube\.ru/(?:video(?:/private)?|play/embed|embed|shorts)/[0-9a-f]{32}",
+    re.I,
+)
 
 YOUTUBE_MAX_DURATION_SEC = int(os.getenv("YOUTUBE_MAX_DURATION_SEC", str(3 * 3600)))  # 3 часа
 # Для вертикальных Shorts yt-dlp репортит "height" как реальную высоту в
