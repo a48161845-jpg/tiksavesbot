@@ -11,35 +11,35 @@ def register_all(_reg) -> None:
     # ---------------- старт / помощь ----------------
     _reg(START_TEXT,
          "👋 <b>Hi! I'm TikSaves</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-         "I download videos, photo slideshows and music from TikTok, plus videos from YouTube (incl. Shorts), Instagram, VK and Pinterest.\n\n"
+         "I download videos, photo slideshows and music from TikTok, plus videos from YouTube (incl. Shorts), Instagram, VK, Pinterest, Likee, X and OK.\n\n"
          "📎 <b>Just send a link</b> — I'll do the rest, no watermarks, no subscriptions.\n\n"
          "🧭 <b>Useful:</b>\n🧾 Help — /help\n📊 My stats — /me\n⚙️ Settings — /settings\n💛 Support the project — /donate\n🆘 Support — /support",
          "👋 <b>Привіт! Я TikSaves</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-         "Завантажую відео, фото-слайдшоу та музику з TikTok, а також відео з YouTube (зокрема Shorts), Instagram, VK і Pinterest.\n\n"
+         "Завантажую відео, фото-слайдшоу та музику з TikTok, а також відео з YouTube (зокрема Shorts), Instagram, VK, Pinterest, Likee, X і OK.\n\n"
          "📎 <b>Просто надішли посилання</b> — решту зроблю сам, без водяних знаків і підписок.\n\n"
          "🧭 <b>Корисне:</b>\n🧾 Допомога — /help\n📊 Моя статистика — /me\n⚙️ Налаштування — /settings\n💛 Підтримати проєкт — /donate\n🆘 Підтримка — /support")
 
     _reg(HELP_TEXT,
          "🧾 <b>TikSaves help</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-         "📎 Just send a link to TikTok, YouTube, Instagram, VK or Pinterest — the bot will offer the options.\n\n"
+         "📎 Just send a link to TikTok, YouTube, Instagram, VK, Pinterest, Likee, X or OK — the bot will offer the options.\n\n"
          "🧭 <b>Help buttons:</b>\n🎬 Download video — how to download videos\n🖼️ Download photos — how to download photos\n"
          "⚠️ Limits — about limits\n📳 Inline mode — how to download in inline mode",
          "🧾 <b>Допомога TikSaves</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-         "📎 Просто надішли посилання на TikTok, YouTube, Instagram, VK або Pinterest — бот сам запропонує варіанти.\n\n"
+         "📎 Просто надішли посилання на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X або OK — бот сам запропонує варіанти.\n\n"
          "🧭 <b>Кнопки допомоги:</b>\n🎬 Завантажити відео — як завантажувати відео\n🖼️ Завантажити фото — як завантажувати фото\n"
          "⚠️ Ліміти — про ліміти\n📳 Inline-режим — як завантажувати в inline-режимі")
 
     hs = HELP_SECTIONS
     _reg(hs["video"],
          "🎬 <b>How to download videos</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-         "1️⃣ Send a link to TikTok, YouTube, Instagram, VK or Pinterest 📱\n\n"
-         "2️⃣ For YouTube/Instagram/VK/Pinterest pick the video quality (or «Audio only») 🎚️\n\n"
+         "1️⃣ Send a link to TikTok, YouTube, Instagram, VK, Pinterest, Likee, X or OK 📱\n\n"
+         "2️⃣ For YouTube/Instagram/VK/Pinterest/Likee/X/OK pick the video quality (or «Audio only») 🎚️\n\n"
          "3️⃣ Wait a few seconds while the video downloads ⏳\n\n"
          "4️⃣ Get your video in good quality without watermarks 🎉\n\n"
          "⛔ If an error occurs, try again; if it repeats, write to /support",
          "🎬 <b>Як завантажувати відео</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-         "1️⃣ Надішли посилання на TikTok, YouTube, Instagram, VK або Pinterest 📱\n\n"
-         "2️⃣ Для YouTube/Instagram/VK/Pinterest обери якість відео (або «Лише звук») 🎚️\n\n"
+         "1️⃣ Надішли посилання на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X або OK 📱\n\n"
+         "2️⃣ Для YouTube/Instagram/VK/Pinterest/Likee/X/OK обери якість відео (або «Лише звук») 🎚️\n\n"
          "3️⃣ Зачекай кілька секунд, поки відео завантажується ⏳\n\n"
          "4️⃣ Отримай відео в гарній якості без водяних знаків 🎉\n\n"
          "⛔ У разі помилки повтори спробу, а якщо вона повториться — напиши в /support")
@@ -80,13 +80,13 @@ def register_all(_reg) -> None:
     _reg(hs["inline"],
          "📳 <b>Inline mode</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
          "Download videos not only in the bot 🎉\n\n"
-         "1️⃣ In any chat type <code>@tiksavesbot</code>, wait for the result to appear, then paste a link to a TikTok video, YouTube, Instagram, VK or Pinterest\n\n"
+         "1️⃣ In any chat type <code>@tiksavesbot</code>, wait for the result to appear, then paste a link to a TikTok video, YouTube, Instagram, VK, Pinterest, Likee, X or OK\n\n"
          "2️⃣ Wait a moment while the video downloads\n\n"
          "3️⃣ Get your video in good quality without watermarks 🎉\n\n"
          "⛔ If an error occurs, try again; if it repeats, write to /support",
          "📳 <b>Inline-режим</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
          "Завантажуй відео не лише в боті 🎉\n\n"
-         "1️⃣ У будь-якому чаті введи <code>@tiksavesbot</code>, зачекай, поки з'явиться результат, потім встав посилання на TikTok-відео, YouTube, Instagram, VK або Pinterest\n\n"
+         "1️⃣ У будь-якому чаті введи <code>@tiksavesbot</code>, зачекай, поки з'явиться результат, потім встав посилання на TikTok-відео, YouTube, Instagram, VK, Pinterest, Likee, X або OK\n\n"
          "2️⃣ Зачекай, поки відео завантажиться\n\n"
          "3️⃣ Отримай відео в гарній якості без водяних знаків 🎉\n\n"
          "⛔ У разі помилки повтори спробу, а якщо вона повториться — напиши в /support")
@@ -120,7 +120,7 @@ def register_all(_reg) -> None:
         ("⏳ Скачиваю…", "⏳ Downloading…", "⏳ Завантажую…"),
         ("📤 Отправляю…", "📤 Sending…", "📤 Надсилаю…"),
         ("⏳ Основной способ сейчас недоступен, пробую запасной…", "⏳ The main method is unavailable, trying a backup…", "⏳ Основний спосіб недоступний, пробую запасний…"),
-        ("📎 Пришли ссылку на TikTok, YouTube, Instagram, VK или Pinterest.", "📎 Send a link to TikTok, YouTube, Instagram, VK or Pinterest.", "📎 Надішли посилання на TikTok, YouTube, Instagram, VK або Pinterest."),
+        ("📎 Пришли ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X или OK.", "📎 Send a link to TikTok, YouTube, Instagram, VK, Pinterest, Likee, X or OK.", "📎 Надішли посилання на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X або OK."),
         ("📎 <b>В посте несколько фото</b>\n\nКак скачать?", "📎 <b>This post has several photos</b>\n\nHow to download?", "📎 <b>У пості кілька фото</b>\n\nЯк завантажити?"),
         ("❌ Проблема с сетью/сервисом. Попробуй позже.", "❌ Network/service problem. Try again later.", "❌ Проблема з мережею/сервісом. Спробуй пізніше."),
         ("❌ Файл больше лимита ({mb} МБ). Telegram не даёт боту отправлять файлы тяжелее.", "❌ The file is over the limit ({mb} MB). Telegram doesn't let bots send heavier files.", "❌ Файл більший за ліміт ({mb} МБ). Telegram не дозволяє ботам надсилати важчі файли."),

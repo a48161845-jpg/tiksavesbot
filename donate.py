@@ -21,15 +21,16 @@ async def safe_edit(call: CallbackQuery, text: str, kb: InlineKeyboardMarkup) ->
         log.debug("safe_edit: %s", e)
 
 
-async def send_stars_invoice(bot: Bot, user_id: int, stars: int) -> None:
+async def send_stars_invoice(bot: Bot, user_id: int, stars: int, lang: str = "ru") -> None:
+    from i18n import tr
     await bot.send_invoice(
         chat_id=user_id,
-        title="💖 Поддержка разработчика",
-        description="Донат на развитие бота",
+        title=tr(lang, "💖 Поддержка разработчика"),
+        description=tr(lang, "Донат на развитие бота"),
         payload=f"donate_stars_{stars}",
         provider_token="",
         currency="XTR",
-        prices=[LabeledPrice(label="Чаевые", amount=stars)],
+        prices=[LabeledPrice(label=tr(lang, "Чаевые"), amount=stars)],
     )
 
 

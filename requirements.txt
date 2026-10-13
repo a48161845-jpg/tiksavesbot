@@ -10,4 +10,3 @@ yt-dlp[default]>=2025.11.12
 # JS-движок (deno): YouTube без него отдаёт только звук и превью, без видеодорожек.
 deno>=2.0.0
 imageio-ffmpeg>=0.5.1
-cobalt_client

@@ -9,7 +9,7 @@ import contextlib
 from pathlib import Path
 from typing import Callable, Optional, List
 
-from aiogram.types import Message, InlineKeyboardMarkup, InputMediaPhoto, FSInputFile
+from aiogram.types import Message, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, FSInputFile
 from aiogram.exceptions import TelegramRetryAfter, TelegramBadRequest
 
 from config import (
@@ -26,6 +26,7 @@ from config import (
 )
 from helpers import html_escape, code, clamp_reason, exc_type_name
 from storage import store
+import globals_state
 from providers import BaseProvider
 from i18n import tr
 from video_compress import compress_to_limit, CompressError
@@ -38,25 +39,81 @@ def chunk(items: List[str], size: int) -> List[List[str]]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
-async def send_photos(message: Message, urls: List[str], caption_html: str = CAPTION_PHOTO) -> int:
+async def _download_media_files(urls: List[str], kinds: List[str], bot=None, chat_id: Optional[int] = None) -> List[Optional[Path]]:
+    """Скачивает файлы сами (с обходом 403 tiktokcdn) — запасной путь, когда Telegram не смог взять URL."""
+    from media_fetch import download_url
+    session = getattr(globals_state.g_provider, "session", None)
+    out: List[Optional[Path]] = []
+    stamp = int(time.time() * 1000)
+    for i, (u, kind) in enumerate(zip(urls, kinds)):
+        ext = ".mp4" if kind == "video" else ".jpg"
+        dest = Path(f"tmp_media_{stamp}_{i}{ext}")
+        try:
+            if not session:
+                raise RuntimeError("no session")
+            await download_url(session, u, dest, kind=kind, bot=bot, chat_id=chat_id)
+            out.append(dest)
+        except Exception:
+            dest.unlink(missing_ok=True)
+            out.append(None)
+    return out
+
+
+async def _answer_group(message: Message, media: List) -> None:
+    try:
+        await message.answer_media_group(media)
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(int(getattr(e, "retry_after", 2)) + 1)
+        await message.answer_media_group(media)
+
+
+async def send_photos(message: Message, urls: List[str], caption_html: str = CAPTION_PHOTO,
+                      live: Optional[dict] = None) -> int:
+    """
+    Шлёт фото альбомами по MEDIA_GROUP_LIMIT. Для кадров с live photo (live[url] = ссылка на клип)
+    в альбом кладётся короткое видео. Если Telegram не смог сам взять URL (403 от CDN и т.п.),
+    файлы скачиваются ботом и отправляются загрузкой; если не скачался live-клип — шлётся обычное фото.
+    """
+    live = live or {}
     packs = chunk(urls, MEDIA_GROUP_LIMIT)
     total = len(urls)
     sent = 0
     for pack in packs:
-        media: List[InputMediaPhoto] = []
-        for i, u in enumerate(pack):
-            global_idx = sent + i
-            if global_idx == total - 1:
-                media.append(InputMediaPhoto(media=u, caption=caption_html, parse_mode="HTML"))
-            else:
-                media.append(InputMediaPhoto(media=u))
+        items = []  # (url, kind)
+        for u in pack:
+            items.append((live[u], "video") if live.get(u) else (u, "photo"))
+
+        def _build(sources: List) -> List:
+            media: List = []
+            for i, ((_u, kind), src) in enumerate(zip(items, sources)):
+                last = (sent + i) == total - 1
+                kw = {"caption": caption_html, "parse_mode": "HTML"} if last else {}
+                cls = InputMediaVideo if kind == "video" else InputMediaPhoto
+                media.append(cls(media=src, **kw))
+            return media
 
         try:
-            await message.answer_media_group(media)
-        except TelegramRetryAfter as e:
-            wait = int(getattr(e, "retry_after", 2)) + 1
-            await asyncio.sleep(wait)
-            await message.answer_media_group(media)
+            await _answer_group(message, _build([u for u, _k in items]))
+        except TelegramBadRequest:
+            # запасной путь: качаем сами и загружаем файлами
+            files = await _download_media_files([u for u, _k in items], [k for _u, k in items], message.bot, message.chat.id)
+            # не скачался клип — пробуем обычное фото этого кадра
+            for idx, f in enumerate(files):
+                if f is None and items[idx][1] == "video":
+                    still = pack[idx]
+                    got = (await _download_media_files([still], ["photo"], message.bot, message.chat.id))[0]
+                    files[idx] = got
+                    items[idx] = (still, "photo")
+            ok = [(it, f) for it, f in zip(items, files) if f is not None]
+            try:
+                if not ok:
+                    raise
+                items = [it for it, _f in ok]
+                await _answer_group(message, _build([FSInputFile(f) for _it, f in ok]))
+            finally:
+                for f in files:
+                    if f:
+                        f.unlink(missing_ok=True)
 
         await asyncio.sleep(random.uniform(ALBUM_PAUSE_MIN, ALBUM_PAUSE_MAX))
         sent += len(pack)

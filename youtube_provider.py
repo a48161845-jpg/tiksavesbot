@@ -31,7 +31,14 @@ from config import (
     YTDLP_POT_URL,
     DOWNLOAD_HARD_CAP_BYTES,
 )
-from cobalt_client import cobalt_enabled, cobalt_download
+try:
+    from cobalt_client import cobalt_enabled, cobalt_download
+except ImportError:  # файл не залит в репозиторий — просто работаем без cobalt-фолбэка
+    def cobalt_enabled() -> bool:
+        return False
+
+    async def cobalt_download(*_a, **_k):
+        raise RuntimeError("cobalt_client.py отсутствует")
 
 
 class YoutubeTooLargeError(Exception):

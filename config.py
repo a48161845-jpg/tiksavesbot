@@ -123,6 +123,12 @@ YOUTUBE_RE = re.compile(
 INSTAGRAM_RE = re.compile(r"(https?://)?(www\.)?instagram\.com/(reel|reels|p|tv)/", re.I)
 VK_RE = re.compile(r"(https?://)?(www\.|m\.)?(vk\.com|vk\.ru|vkvideo\.ru)/(video|clip)", re.I)
 PINTEREST_RE = re.compile(r"(https?://)?(www\.)?(pinterest\.[a-z.]+/pin/|pin\.it/)", re.I)
+LIKEE_RE = re.compile(r"(https?://)?([a-z0-9-]+\.)?(likee\.video|likee\.com|like-video\.com)/\S+", re.I)
+TWITTER_RE = re.compile(
+    r"(https?://)?(www\.|mobile\.|m\.)?(twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com)/(?:i/web/|i/)?(?:[A-Za-z0-9_]+/)?status(?:es)?/\d+",
+    re.I,
+)
+OK_RE = re.compile(r"(https?://)?(www\.|m\.)?ok\.ru/(video|videoembed|live|movie)/?\d+", re.I)
 
 YOUTUBE_MAX_DURATION_SEC = int(os.getenv("YOUTUBE_MAX_DURATION_SEC", str(3 * 3600)))  # 3 часа
 # Для вертикальных Shorts yt-dlp репортит "height" как реальную высоту в

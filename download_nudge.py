@@ -21,7 +21,8 @@ async def _maybe_send_nudge(bot, uid: int) -> None:
     total = store.bump_download_counter(uid)
     if total % NUDGE_EVERY != 0:
         return
-    text = random.choice([REMINDER_MSG, DONATE_REMINDER_MSG])
+    from i18n import tr
+    text = tr(uid, random.choice([REMINDER_MSG, DONATE_REMINDER_MSG]))
     with contextlib.suppress(Exception):
         await bot.send_message(uid, to_html_simple(text), parse_mode="HTML")
 

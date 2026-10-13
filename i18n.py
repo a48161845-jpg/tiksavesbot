@@ -1,7 +1,7 @@
 """
 Мультиязычность. Ключ перевода — сама русская строка (так в коде сразу видно,
 что показывается пользователю): tr(message, "⏳ Скачиваю…").
-Языки: ru (по умолчанию), en, uk. Чтобы добавить язык — заведи словарь
+Языки: ru (по умолчанию), en, uk, kk, uz, ky. Чтобы добавить язык — заведи словарь
 TRANSLATIONS["xx"] и строку в LANGUAGES.
 
 Язык хранится в store.data["user_lang"][uid]. Если строки нет в словаре языка —
@@ -15,14 +15,34 @@ LANGUAGES: Dict[str, str] = {
     "ru": "🇷🇺 Русский",
     "en": "🇬🇧 English",
     "uk": "🇺🇦 Українська",
+    "kk": "🇰🇿 Қазақша",
+    "uz": "🇺🇿 Oʻzbekcha",
+    "ky": "🇰🇬 Кыргызча",
 }
 
-TRANSLATIONS: Dict[str, Dict[str, str]] = {"en": {}, "uk": {}}
+TRANSLATIONS: Dict[str, Dict[str, str]] = {"en": {}, "uk": {}, "kk": {}, "uz": {}, "ky": {}}
 
 
-def _reg(ru: str, en: str, uk: str) -> None:
+def _reg(ru: str, en: str, uk: str, kk: str = "", uz: str = "", ky: str = "") -> None:
     TRANSLATIONS["en"][ru] = en
     TRANSLATIONS["uk"][ru] = uk
+    for code, text in (("kk", kk), ("uz", uz), ("ky", ky)):
+        if text:  # нет перевода — показывается русский оригинал
+            TRANSLATIONS[code][ru] = text
+
+
+def _add_cis(en_key: str, kk: str, uz: str, ky: str) -> None:
+    """Добавляет kk/uz/ky к уже зарегистрированной строке; en_key — английский текст целиком или его начало."""
+    en = TRANSLATIONS["en"]
+    ru = next((r for r, e in en.items() if e == en_key), None)
+    if ru is None:
+        cand = [r for r, e in en.items() if e.startswith(en_key)]
+        ru = cand[0] if len(cand) == 1 else None
+    if ru is None:
+        return
+    for code, text in (("kk", kk), ("uz", uz), ("ky", ky)):
+        if text:
+            TRANSLATIONS[code][ru] = text
 
 
 def get_lang(uid: int) -> str:
@@ -93,3 +113,7 @@ def _ensure_loaded() -> None:
     _loaded = True
     from i18n_texts import register_all
     register_all(_reg)
+    from i18n_extra import register_extra
+    register_extra(_reg)
+    from i18n_cis import register_cis
+    register_cis(_add_cis)

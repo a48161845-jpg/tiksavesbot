@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Tuple
 from aiogram.types import Message, LinkPreviewOptions
 
 from helpers import html_escape, code, msk_now, period_keys, week_range_str, iter_day_keys, format_msk
+from i18n import tr
 from storage import store
 from admin_log_file import log_admin
 from logging_channel import log_admin_action_to_channel, format_user_for_log
@@ -63,6 +64,9 @@ _SOURCE_LABELS = {
     "youtube": "▶️ YouTube",
     "instagram": "📸 Instagram",
     "vk": "🔵 VK",
+    "likee": "💗 Likee",
+    "twitter": "🐦 X (Twitter)",
+    "ok": "🟠 OK",
     "pinterest": "📌 Pinterest",
 }
 
@@ -73,6 +77,9 @@ _PLATFORM_ORDER = [
     ("youtube", "▶️ YouTube"),
     ("pinterest", "📌 Pinterest"),
     ("vk", "🔵 VK"),
+    ("likee", "💗 Likee"),
+    ("twitter", "🐦 X (Twitter)"),
+    ("ok", "🟠 OK"),
 ]
 
 
@@ -234,6 +241,17 @@ def _admin_stats_range_text(start_dt: datetime, end_dt: datetime) -> str:
     )
     return "".join(text_parts)
 
+def _user_body(uid: int, v_ops: int, by_source: Dict[str, int], p_sent: int, a_sent: int, d_sent: int) -> str:
+    return (
+        f"{tr(uid, '🎬 Видео скачано:')} <b>{v_ops}</b>\n"
+        f"└  {tr(uid, 'По платформам:')}\n{_fmt_platform_breakdown(by_source)}\n\n"
+        f"{tr(uid, '🗃️ <b>Другие скачивания:</b>')}\n"
+        f"├ {tr(uid, '🖼️ Фото скачано:')} <b>{p_sent}</b>\n"
+        f"├ {tr(uid, '🎵 Аудио скачано:')} <b>{a_sent}</b>\n"
+        f"└ {tr(uid, '📝 Описаний скачано:')} <b>{d_sent}</b>"
+    )
+
+
 def _user_stats_range_text(uid: int, start_dt: datetime, end_dt: datetime) -> str:
     day_keys = iter_day_keys(start_dt, end_dt)
     mp = (store.data.get("user_stats_period", {}) or {}).get("d", {}) or {}
@@ -255,17 +273,12 @@ def _user_stats_range_text(uid: int, start_dt: datetime, end_dt: datetime) -> st
             by_source[k] = by_source.get(k, 0) + int(v)
 
     return (
-        "📊 <b>Твоя статистика (диапазон)</b>\n"
+        tr(uid, "📊 <b>Твоя статистика (диапазон)</b>") + "\n"
         f"<i>{start_dt.strftime('%d.%m.%Y')} - {end_dt.strftime('%d.%m.%Y')}</i>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🎬 Видео скачано: <b>{v_ops}</b>\n"
-        f"└  По платформам:\n{_fmt_platform_breakdown(by_source)}\n\n"
-        "🗃️ <b>Другие скачивания:</b>\n"
-        f"├ 🖼️ Фото скачано: <b>{p_sent}</b>\n"
-        f"├ 🎵 Аудио скачано: <b>{a_sent}</b>\n"
-        f"└ 📝 Описаний скачано: <b>{d_sent}</b>\n\n"
-        f"⭐ Stars пожертвовано: <b>{stars}</b>\n"
-        f"🪙 Рублей пожертвовано: <b>{money}₽</b>"
+        f"{_user_body(uid, v_ops, by_source, p_sent, a_sent, d_sent)}\n\n"
+        f"{tr(uid, '⭐ Stars пожертвовано:')} <b>{stars}</b>\n"
+        f"{tr(uid, '🪙 Рублей пожертвовано:')} <b>{money}₽</b>"
     )
 
 def _admin_stats_text(mode: str) -> str:
@@ -542,9 +555,9 @@ def _donation_lines(uid: int) -> str:
     stars = store.get_user_stars(uid)
     money = store.get_user_money(uid)
     return (
-        "💛 <b>Донаты:</b>\n"
-        f"├ ⭐ Донат звёздами: <b>{stars}</b>\n"
-        f"└ 🪙 Донат в рублях (крипто/DonationAlerts): <b>{money}₽</b>"
+        f"{tr(uid, '💛 <b>Донаты:</b>')}\n"
+        f"├ {tr(uid, '⭐ Донат звёздами:')} <b>{stars}</b>\n"
+        f"└ {tr(uid, '🪙 Донат в рублях (крипто/DonationAlerts):')} <b>{money}₽</b>"
     )
 
 
@@ -562,19 +575,14 @@ def _user_stats_text(uid: int) -> str:
         joined = format_msk(first_seen_ts)
     else:
         last_seen_ts = int((store.data.get("last_seen", {}) or {}).get(str(uid), 0))
-        joined = format_msk(last_seen_ts) if last_seen_ts > 0 else "неизвестно"
+        joined = format_msk(last_seen_ts) if last_seen_ts > 0 else tr(uid, "неизвестно")
 
     return (
-        "📊 <b>Твоя статистика:</b>\n"
+        tr(uid, "📊 <b>Твоя статистика:</b>") + "\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"{_profile_header_lines(uid)}\n\n"
-        f"🕒 Первое появление в боте: {code(joined)}\n\n"
-        f"🎬 Видео скачано: <b>{v_ops}</b>\n"
-        f"└  По платформам:\n{_fmt_platform_breakdown(by_source)}\n\n"
-        "🗃️ <b>Другие скачивания:</b>\n"
-        f"├ 🖼️ Фото скачано: <b>{p_sent}</b>\n"
-        f"├ 🎵 Аудио скачано: <b>{a_sent}</b>\n"
-        f"└ 📝 Описаний скачано: <b>{d_sent}</b>\n\n"
+        f"{tr(uid, '🕒 Первое появление в боте:')} {code(joined)}\n\n"
+        f"{_user_body(uid, v_ops, by_source, p_sent, a_sent, d_sent)}\n\n"
         f"{_donation_lines(uid)}"
     )
 
@@ -589,23 +597,18 @@ def _user_stats_period_text(uid: int, mode: str) -> str:
     a_sent = int(rec.get("audio_sent", 0))
     d_sent = int(rec.get("desc_sent", 0))
     by_source = rec.get("by_source", {}) or {}
-    nice = {"d": "день", "n": "неделя", "m": "месяц", "y": "год"}[mode]
+    nice = {"d": "день", "n": "неделя", "m": "месяц", "y": "год"}[mode]  # переводится через tr
     if mode == "n":
         key_view = week_range_str(msk_now())
     else:
         key_view = key or ""
     return (
-        f"📊 <b>Твоя статистика ({nice})</b>\n"
+        f"{tr(uid, '📊 <b>Твоя статистика</b>')[:-4]} ({tr(uid, nice)})</b>\n"
         f"<i>{html_escape(key_view)}</i>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🎬 Видео скачано: <b>{v_ops}</b>\n"
-        f"└  По платформам:\n{_fmt_platform_breakdown(by_source)}\n\n"
-        "🗃️ <b>Другие скачивания:</b>\n"
-        f"├ 🖼️ Фото скачано: <b>{p_sent}</b>\n"
-        f"├ 🎵 Аудио скачано: <b>{a_sent}</b>\n"
-        f"└ 📝 Описаний скачано: <b>{d_sent}</b>\n\n"
-        f"⭐ Stars пожертвовано: <b>{int(rec.get('stars', 0))}</b>\n"
-        f"🪙 Рублей пожертвовано: <b>{int(rec.get('money', 0))}₽</b>"
+        f"{_user_body(uid, v_ops, by_source, p_sent, a_sent, d_sent)}\n\n"
+        f"{tr(uid, '⭐ Stars пожертвовано:')} <b>{int(rec.get('stars', 0))}</b>\n"
+        f"{tr(uid, '🪙 Рублей пожертвовано:')} <b>{int(rec.get('money', 0))}₽</b>"
     )
 
 def _admin_banlist_text() -> str:

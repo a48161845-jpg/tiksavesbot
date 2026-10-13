@@ -107,11 +107,9 @@ async def add_download_strike(
 
 async def ban_message(message: Message, who_label: str, until: int, reason: str) -> None:
     uid = message.from_user.id
+    from i18n import tr
     await message.answer(
-        "🚫 <b>Вы заблокированы.</b>\n\n"
-        f"👤 User/id: <b>{format_user_for_log(who_label, uid)}</b>\n"
-        f"⏳ Бан до: <b>{format_msk(until)} МСК</b>\n"
-        f"📌 Причина: <b>{html_escape(reason)}</b>\n\n"
-        f"🆘 Поддержка: {html_escape(SUPPORT_USERNAME)}",
+        tr(message, "🚫 <b>Вы заблокированы.</b>\n\n👤 User/id: <b>{u}</b>\n⏳ Бан до: <b>{until} МСК</b>\n📌 Причина: <b>{reason}</b>\n\n🆘 Поддержка: {support}",
+           u=format_user_for_log(who_label, uid), until=format_msk(until), reason=html_escape(reason), support=html_escape(SUPPORT_USERNAME)),
         parse_mode="HTML",
     )

@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, List
 import aiohttp
 from datetime import datetime, timezone, timedelta
 
-from config import MSK_TZ, TIKTOK_RE, TIKTOK_SHORT_RE, YOUTUBE_RE, INSTAGRAM_RE, VK_RE, PINTEREST_RE, ADMINS
+from config import MSK_TZ, TIKTOK_RE, TIKTOK_SHORT_RE, YOUTUBE_RE, INSTAGRAM_RE, VK_RE, PINTEREST_RE, LIKEE_RE, TWITTER_RE, OK_RE, ADMINS
 
 # ================== HTML FORMATTING ==================
 def html_escape(s: str) -> str:
@@ -247,18 +247,54 @@ def is_vk(text: str) -> bool:
 def is_pinterest(text: str) -> bool:
     return bool(PINTEREST_RE.search(text or ""))
 
+def is_likee(text: str) -> bool:
+    return bool(LIKEE_RE.search(text or ""))
+
+def is_twitter(text: str) -> bool:
+    return bool(TWITTER_RE.search(text or ""))
+
+def is_ok(text: str) -> bool:
+    return bool(OK_RE.search(text or ""))
+
+# (platform, regex) — порядок важен только для читаемости, паттерны не пересекаются.
+_OTHER_PLATFORMS = (
+    ("instagram", INSTAGRAM_RE),
+    ("vk", VK_RE),
+    ("pinterest", PINTEREST_RE),
+    ("likee", LIKEE_RE),
+    ("twitter", TWITTER_RE),
+    ("ok", OK_RE),
+)
+
+def detect_other_platform(text: str) -> Optional[str]:
+    """Платформа из набора «через yt-dlp» (кроме YouTube) или None."""
+    for name, rx in _OTHER_PLATFORMS:
+        if rx.search(text or ""):
+            return name
+    return None
+
 def is_other_source(text: str) -> bool:
-    """Instagram / VK / Pinterest — всё, что скачивается через тот же движок, что и YouTube."""
-    return is_instagram(text) or is_vk(text) or is_pinterest(text)
+    """Instagram / VK / Pinterest / Likee / X / OK — всё, что идёт через тот же движок, что и YouTube."""
+    return detect_other_platform(text) is not None
+
+_TW_MIRRORS_RE = re.compile(r"://(?:www\.|mobile\.|m\.)?(?:fxtwitter|vxtwitter|fixupx)\.com/", re.I)
+
+def _fix_other_url(url: str) -> str:
+    # зеркала X (fxtwitter и т.п.) yt-dlp не знает — возвращаем настоящий домен
+    return _TW_MIRRORS_RE.sub("://twitter.com/", url)
 
 def extract_other_source_url(text: str) -> Optional[str]:
+    u = _extract_other_source_url_raw(text)
+    return _fix_other_url(u) if u else u
+
+def _extract_other_source_url_raw(text: str) -> Optional[str]:
     if not text:
         return None
-    m = re.search(r"https?://\S+", text)
-    if m:
-        url = m.group(0)
-        return url if is_other_source(url) else None
-    for rx in (INSTAGRAM_RE, VK_RE, PINTEREST_RE):
+    for m in re.finditer(r"https?://\S+", text):
+        url = m.group(0).rstrip(").,;]>\"'")
+        if is_other_source(url):
+            return url
+    for _name, rx in _OTHER_PLATFORMS:
         m2 = rx.search(text)
         if m2:
             url = text[m2.start():].split()[0]
@@ -333,3 +369,18 @@ def _empty_period_bucket() -> dict:
         "bans_total": 0,
         "stars_total": 0,
     }
+
+
+async def resolve_generic_redirect(url: str, timeout: float = 10.0) -> str:
+    """Раскрывает короткую ссылку (например l.likee.video/v/...) — возвращает финальный URL или исходный."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"},
+            ) as resp:
+                return str(resp.url) or url
+    except Exception:
+        return url

@@ -37,6 +37,8 @@ class MediaInfo:
     photos: List[str]
     music: Optional[str]
     description: Optional[str] = None
+    # live photo: URL фото -> URL короткого видеоклипа (если у кадра есть «живая» версия)
+    live: Optional[Dict[str, str]] = None
 
 
 def _deep_find_str(data: Any, keys: List[str], _depth: int = 0) -> Optional[str]:
@@ -140,13 +142,39 @@ class TikWMClient(_DlErrMixin, BaseProvider):
         video = data.get("play") or data.get("wmplay")
 
         photos: List[str] = []
+        live: Dict[str, str] = {}
+        _live_keys = ("live", "live_photo", "livePhoto", "live_url", "motion", "motion_url", "video", "video_url", "play", "mp4")
         for key in ("images", "image", "photos"):
             v = data.get(key)
             if isinstance(v, list) and v:
                 if isinstance(v[0], dict):
-                    photos = [x for x in ((o.get("url") or o.get("image") or "") for o in v) if x]
+                    for o in v:
+                        pu = o.get("url") or o.get("image") or o.get("display_image") or ""
+                        if isinstance(pu, dict):
+                            ul = pu.get("url_list") or pu.get("urlList") or []
+                            pu = ul[0] if ul else ""
+                        if not pu:
+                            continue
+                        photos.append(pu)
+                        for lk in _live_keys:
+                            lv = o.get(lk)
+                            if isinstance(lv, dict):
+                                ul = lv.get("url_list") or lv.get("urlList") or []
+                                lv = ul[0] if ul else None
+                            if isinstance(lv, str) and lv.startswith("http") and lv != pu:
+                                live[pu] = lv
+                                break
                 else:
                     photos = [str(x) for x in v if x]
+                # параллельный список живых клипов на уровне поста
+                for lk in ("live_photos", "livePhotos", "live_videos", "motion_photos"):
+                    lv = data.get(lk)
+                    if isinstance(lv, list) and photos:
+                        for pu, item in zip(photos, lv):
+                            if isinstance(item, dict):
+                                item = item.get("url") or item.get("video") or item.get("play")
+                            if isinstance(item, str) and item.startswith("http"):
+                                live[pu] = item
                 break
 
         music = None
@@ -178,7 +206,7 @@ class TikWMClient(_DlErrMixin, BaseProvider):
                 description = _normalize_description(v.strip())
                 break
 
-        return MediaInfo(video=video, photos=photos, music=music, description=description)
+        return MediaInfo(video=video, photos=photos, music=music, description=description, live=live or None)
 
     async def _get_media_once(self, url: str, headers: Dict[str, str]) -> MediaInfo:
         await self._respect_cooldown()
