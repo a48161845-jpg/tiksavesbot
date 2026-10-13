@@ -80,7 +80,7 @@ async def donate_cmd(message: Message):
     store.set_user_label(uid, label)
     if not await gate_message(message, label):
         return
-    await message.answer(DONATE_TEXT, parse_mode="HTML", reply_markup=donate_main_kb(), link_preview_options=LinkPreviewOptions(is_disabled=True))
+    await message.answer(tr(message, DONATE_TEXT), parse_mode="HTML", reply_markup=donate_main_kb(get_lang(uid)), link_preview_options=LinkPreviewOptions(is_disabled=True))
     await log_event(
         message.bot,
         "donate_open",

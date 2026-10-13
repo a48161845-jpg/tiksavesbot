@@ -42,7 +42,7 @@ from config import INLINE_CACHE_CHANNEL_ID, MAX_VIDEO_BYTES, CAPTION_VIDEO, YOUT
 from helpers import (
     is_tiktok, extract_tiktok_url, normalize_tiktok_url,
     is_youtube, extract_youtube_url, normalize_youtube_url,
-    is_instagram, is_vk, is_pinterest, extract_other_source_url,
+    detect_other_platform, extract_other_source_url,
 )
 from storage import store
 from i18n import tr
@@ -83,10 +83,10 @@ def _detect(text: str):
         u = extract_youtube_url(text)
         if u:
             return "youtube", normalize_youtube_url(u)
-    if is_instagram(text) or is_vk(text) or is_pinterest(text):
-        u = extract_other_source_url(text)
-        if u:
-            platform = "instagram" if is_instagram(u) else ("vk" if is_vk(u) else "pinterest")
+    u = extract_other_source_url(text)
+    if u:
+        platform = detect_other_platform(u)
+        if platform:
             return platform, u
     return None, None
 
@@ -123,14 +123,22 @@ async def _resolve_and_download(platform: str, url: str, out_dir: Path) -> Path:
     return path
 
 
-async def _download_and_cache(platform: str, url: str, uid: int) -> str:
-    """Качает видео, кладёт в ТЕХНИЧЕСКИЙ канал (не логи!) чтобы получить file_id, и кэширует. Возвращает file_id."""
-    if not INLINE_CACHE_CHANNEL_ID:
-        raise RuntimeError(
-            "Инлайн-режим не настроен: не задан INLINE_CACHE_CHANNEL_ID "
-            "(отдельный технический канал, НЕ канал логов — см. .env)"
+_cache_warned = False
+
+
+def _warn_cache_channel_once(e: Exception) -> None:
+    global _cache_warned
+    if not _cache_warned:
+        _cache_warned = True
+        import logging
+        logging.getLogger(__name__).warning(
+            "INLINE_CACHE_CHANNEL_ID=%s недоступен (%s). Проверь ID (формат -100...) и что бот — админ канала. "
+            "Пока кэшируем через личный чат пользователя.", INLINE_CACHE_CHANNEL_ID, e,
         )
 
+
+async def _download_and_cache(platform: str, url: str, uid: int) -> str:
+    """Качает видео, кладёт в ТЕХНИЧЕСКИЙ канал (не логи!) чтобы получить file_id, и кэширует. Возвращает file_id."""
     tmp_path: Optional[Path] = None
     try:
         tmp_path = await _resolve_and_download(platform, url, Path("."))
@@ -155,7 +163,22 @@ async def _download_and_cache(platform: str, url: str, uid: int) -> str:
         # больше не будут качать заново). В админ-логи это НЕ попадает.
         meta = await prepare_video_kwargs(tmp_path)
         try:
-            cache_msg = await bot.send_video(INLINE_CACHE_CHANNEL_ID, FSInputFile(tmp_path), **telegram_kwargs(meta))
+            cache_msg = None
+            kw = telegram_kwargs(meta)
+            try:
+                if not INLINE_CACHE_CHANNEL_ID:
+                    raise RuntimeError("chat not found: INLINE_CACHE_CHANNEL_ID не задан")
+                cache_msg = await bot.send_video(INLINE_CACHE_CHANNEL_ID, FSInputFile(tmp_path), **kw)
+            except Exception as ce:
+                low = str(ce).lower()
+                if not any(x in low for x in ("chat not found", "forbidden", "not enough rights", "have no rights", "kicked")):
+                    raise
+                # Технический канал недоступен (неверный ID / бот не админ канала) —
+                # получаем file_id через личный чат с пользователем и тут же удаляем сообщение.
+                cache_msg = await bot.send_video(uid, FSInputFile(tmp_path), disable_notification=True, **kw)
+                with contextlib.suppress(Exception):
+                    await bot.delete_message(uid, cache_msg.message_id)
+                _warn_cache_channel_once(ce)
         finally:
             cleanup_video_kwargs(meta)
         file_id = cache_msg.video.file_id
@@ -187,10 +210,10 @@ async def inline_handler(inline_query: InlineQuery):
     if not query:
         hint = InlineQueryResultArticle(
             id="hint",
-            title="Вставь ссылку на TikTok / YouTube / Instagram / VK / Pinterest",
-            description="Начни печатать — бот покажет результат прямо тут",
+            title=tr(uid, "Вставь ссылку на TikTok / YouTube / Instagram / VK / Pinterest / Likee / X / OK"),
+            description=tr(uid, "Начни печатать — бот покажет результат прямо тут"),
             input_message_content=InputTextMessageContent(
-                message_text="📎 Пришли мне ссылку на TikTok, YouTube, Instagram, VK или Pinterest — скачаю видео."
+                message_text=tr(uid, "📎 Пришли мне ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X или OK — скачаю видео.")
             ),
         )
         await inline_query.answer([hint], cache_time=1, is_personal=True)
@@ -200,9 +223,9 @@ async def inline_handler(inline_query: InlineQuery):
     if not url:
         not_found = InlineQueryResultArticle(
             id="notfound",
-            title="Ссылка не распознана",
-            description="Поддерживаются TikTok, YouTube, Instagram, VK, Pinterest",
-            input_message_content=InputTextMessageContent(message_text="❌ Не нашёл поддерживаемую ссылку в запросе."),
+            title=tr(uid, "Ссылка не распознана"),
+            description=tr(uid, "Поддерживаются TikTok, YouTube, Instagram, VK, Pinterest, Likee, X, OK"),
+            input_message_content=InputTextMessageContent(message_text=tr(uid, "❌ Не нашёл поддерживаемую ссылку в запросе.")),
         )
         await inline_query.answer([not_found], cache_time=1, is_personal=True)
         return
@@ -213,7 +236,7 @@ async def inline_handler(inline_query: InlineQuery):
         result = InlineQueryResultCachedVideo(
             id=f"c:{key}",
             video_file_id=cached["file_id"],
-            title="✅ Готово — отправить видео",
+            title=tr(uid, "✅ Готово — отправить видео"),
             caption=tr(uid, CAPTION_VIDEO),
             parse_mode="HTML",
         )
@@ -227,9 +250,9 @@ async def inline_handler(inline_query: InlineQuery):
         if not ok_dl:
             limited = InlineQueryResultArticle(
                 id="ratelimited",
-                title="⏳ Слишком много запросов подряд",
-                description="Попробуй через минуту",
-                input_message_content=InputTextMessageContent(message_text="⏳ Слишком много запросов подряд — попробуй через минуту."),
+                title=tr(uid, "⏳ Слишком много запросов подряд"),
+                description=tr(uid, "Попробуй через минуту"),
+                input_message_content=InputTextMessageContent(message_text=tr(uid, "⏳ Слишком много запросов подряд — попробуй через минуту.")),
             )
             await inline_query.answer([limited], cache_time=1, is_personal=True)
             return
@@ -245,23 +268,22 @@ async def inline_handler(inline_query: InlineQuery):
     except asyncio.TimeoutError:
         slow = InlineQueryResultArticle(
             id=f"slow:{key}",
-            title="⏳ Видео скачивается…",
-            description="Подожди ~10 сек и поменяй запрос (добавь/убери пробел) — видео будет готово мгновенно",
+            title=tr(uid, "⏳ Видео скачивается…"),
+            description=tr(uid, "Подожди ~10 сек и поменяй запрос (добавь/убери пробел) — видео будет готово мгновенно"),
             input_message_content=InputTextMessageContent(
-                message_text="⏳ Видео ещё скачивается. Повтори запрос через несколько секунд — "
-                "оно уже будет в кэше и отправится мгновенно. Или пришли ссылку боту в чат."
+                message_text=tr(uid, "⏳ Видео ещё скачивается. Повтори запрос через несколько секунд — оно уже будет в кэше и отправится мгновенно. Или пришли ссылку боту в чат.")
             ),
         )
         await inline_query.answer([slow], cache_time=1, is_personal=True)
         return
     except Exception:
-        reason = _failed.get(key) or "Не получилось скачать это видео"
+        reason = tr(uid, _failed.get(key) or "Не получилось скачать это видео")
         failed = InlineQueryResultArticle(
             id=f"failed:{key}",
-            title="❌ Не получилось скачать это видео",
+            title=tr(uid, "❌ Не получилось скачать это видео"),
             description=reason[:100],
             input_message_content=InputTextMessageContent(
-                message_text=f"❌ {reason}. Попробуй прислать ссылку боту напрямую в чат."
+                message_text=tr(uid, "❌ {reason}. Попробуй прислать ссылку боту напрямую в чат.", reason=reason)
             ),
         )
         await inline_query.answer([failed], cache_time=1, is_personal=True)
@@ -270,7 +292,7 @@ async def inline_handler(inline_query: InlineQuery):
     result = InlineQueryResultCachedVideo(
         id=f"n:{key}",
         video_file_id=file_id,
-        title="✅ Готово — отправить видео",
+        title=tr(uid, "✅ Готово — отправить видео"),
         caption=tr(uid, CAPTION_VIDEO),
         parse_mode="HTML",
     )
@@ -287,8 +309,8 @@ async def _background_download(key: str, platform: str, url: str, uid: int, bot)
             _failed[key] = "Видео слишком тяжёлое для инлайна"
         elif "слайдшоу" in low:
             _failed[key] = "Это фото-слайдшоу — в инлайне только видео"
-        elif "не настроен" in low:
-            _failed[key] = "Инлайн-режим не настроен (INLINE_CACHE_CHANNEL_ID)"
+        elif "chat not found" in low or "bot was blocked" in low or "forbidden" in low:
+            _failed[key] = "Открой бота @tiksavesbot и нажми /start, затем повтори"
         else:
             _failed[key] = "Не удалось скачать (приватное/недоступное видео?)"
         with contextlib.suppress(Exception):

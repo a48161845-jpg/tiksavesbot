@@ -20,22 +20,29 @@ _SETTINGS = {
     "ru": "⚙️ <b>Настройки</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🌐 Язык: <b>{lang}</b>\n\nВыбери язык ниже 👇",
     "en": "⚙️ <b>Settings</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🌐 Language: <b>{lang}</b>\n\nChoose a language below 👇",
     "uk": "⚙️ <b>Налаштування</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🌐 Мова: <b>{lang}</b>\n\nОбери мову нижче 👇",
+    "kk": "⚙️ <b>Баптаулар</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🌐 Тіл: <b>{lang}</b>\n\nТөменнен тілді таңдаңыз 👇",
+    "uz": "⚙️ <b>Sozlamalar</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🌐 Til: <b>{lang}</b>\n\nQuyida tilni tanlang 👇",
+    "ky": "⚙️ <b>Жөндөөлөр</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🌐 Тил: <b>{lang}</b>\n\nТөмөндөн тилди тандаңыз 👇",
 }
 _CHANGED = {
     "ru": "✅ Язык изменён: {lang}",
     "en": "✅ Language changed: {lang}",
     "uk": "✅ Мову змінено: {lang}",
+    "kk": "✅ Тіл өзгертілді: {lang}",
+    "uz": "✅ Til oʻzgartirildi: {lang}",
+    "ky": "✅ Тил өзгөртүлдү: {lang}",
 }
 # Приветствие при первом входе — двуязычное, пока язык ещё не выбран.
-LANG_PROMPT = "🌐 <b>Выберите язык / Choose your language / Обери мову</b>"
+LANG_PROMPT = "🌐 <b>Выберите язык / Choose your language / Обери мову / Тілді таңдаңыз / Tilni tanlang / Тилди тандаңыз</b>"
 
 
 def lang_kb(current: str = "", first: bool = False) -> InlineKeyboardMarkup:
     suffix = ":start" if first else ""
-    rows = [
-        [InlineKeyboardButton(text=("✅ " if code == current else "") + name, callback_data=f"lang:{code}{suffix}")]
+    buttons = [
+        InlineKeyboardButton(text=("✅ " if code == current else "") + name, callback_data=f"lang:{code}{suffix}")
         for code, name in LANGUAGES.items()
     ]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     if not first:
         rows.append([InlineKeyboardButton(text=tr(current or "ru", "❌ Закрыть"), callback_data="lang:close")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

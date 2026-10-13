@@ -159,10 +159,10 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
             if text.isdigit():
                 stars = int(text)
                 if not (STARS_MIN <= stars <= STARS_MAX):
-                    await message.answer(f"❌ Сумма должна быть {STARS_MIN}–{STARS_MAX} ⭐")
+                    await message.answer(tr(message, "❌ Сумма должна быть {a}–{b} ⭐", a=STARS_MIN, b=STARS_MAX))
                     return
                 waiting_stars_amount.pop(uid, None)
-                await send_stars_invoice(message.bot, uid, stars)
+                await send_stars_invoice(message.bot, uid, stars, get_lang(uid))
                 return
 
     store.register(uid)
@@ -171,7 +171,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
     if url:
         url = normalize_tiktok_url(url)
     if not url and not text.startswith("/"):
-        await message.answer(tr(message, "📎 Пришли ссылку на TikTok, YouTube, Instagram, VK или Pinterest."))
+        await message.answer(tr(message, "📎 Пришли ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X или OK."))
         return
 
     if text.startswith("/"):
@@ -232,6 +232,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
                 pending[req_id] = {
                     "uid": uid,
                     "photos": photos,
+                    "live": media.live or {},
                     "music": music,
                     "description": description,
                     "want_music": False,

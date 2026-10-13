@@ -50,7 +50,24 @@ async def _send_photos_as_video(call: CallbackQuery, st: dict, uid: int, label: 
     name_prefix = f"slideshow_{uid}_{int(time.time())}"
     out_path: Path = None
     try:
-        out_path = await build_photo_slideshow_video(session, photo_urls, st.get("music"), Path("."), name_prefix)
+        try:
+            out_path = await build_photo_slideshow_video(
+                session, photo_urls, st.get("music"), Path("."), name_prefix,
+                live=st.get("live"), bot=call.bot, chat_id=call.message.chat.id,
+            )
+        except Exception as first_e:
+            # ссылки на фото подписаны и быстро протухают / режутся CDN — берём свежие у провайдера и пробуем ещё раз
+            switcher = globals_state.g_switcher
+            src = st.get("src")
+            if not (switcher and src):
+                raise
+            fresh, _prov = await switcher.get_media(src, raw_url=src)
+            if not fresh.photos:
+                raise first_e
+            out_path = await build_photo_slideshow_video(
+                session, list(fresh.photos), fresh.music or st.get("music"), Path("."), name_prefix,
+                live=fresh.live or st.get("live"), bot=call.bot, chat_id=call.message.chat.id,
+            )
 
         description = st.get("description")
         req_id = new_req_id()
@@ -287,7 +304,7 @@ async def picker_cb(call: CallbackQuery):
             await call.message.delete()
 
         await call.answer(tr(uid, "Отправляю всё…"))
-        cnt = await send_photos(call.message, photos_all, caption_html=tr(uid, CAPTION_PHOTO))
+        cnt = await send_photos(call.message, photos_all, caption_html=tr(uid, CAPTION_PHOTO), live=st.get("live"))
         store.inc_download(uid, "photo", items=cnt, source="tiktok")
 
         if want_music and globals_state.g_provider:
@@ -310,7 +327,7 @@ async def picker_cb(call: CallbackQuery):
             ],
         )
         chat_id = call.message.chat.id if call.message else uid
-        await call.bot.send_message(chat_id, "👇", reply_markup=post_download_kb())
+        await call.bot.send_message(chat_id, "👇", reply_markup=post_download_kb(get_lang(uid)))
         return
 
     if act == "go":
@@ -338,7 +355,7 @@ async def picker_cb(call: CallbackQuery):
         await call.answer(tr(uid, "Отправляю…"))
         cnt = 0
         if chosen:
-            cnt = await send_photos(call.message, chosen, caption_html=tr(uid, CAPTION_PHOTO))
+            cnt = await send_photos(call.message, chosen, caption_html=tr(uid, CAPTION_PHOTO), live=st.get("live"))
             store.inc_download(uid, "photo", items=cnt, source="tiktok")
 
         if want_music and globals_state.g_provider:
@@ -360,7 +377,7 @@ async def picker_cb(call: CallbackQuery):
                 ],
             )
         chat_id = call.message.chat.id if call.message else uid
-        await call.bot.send_message(chat_id, "👇", reply_markup=post_download_kb())
+        await call.bot.send_message(chat_id, "👇", reply_markup=post_download_kb(get_lang(uid)))
         return
 
     await call.answer()

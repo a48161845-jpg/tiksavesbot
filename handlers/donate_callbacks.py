@@ -12,6 +12,7 @@ from aiogram import F
 from aiogram.types import CallbackQuery, Message, PreCheckoutQuery, LinkPreviewOptions
 
 from globals_state import dp
+from i18n import tr, get_lang
 import globals_state
 from config import STARS_MIN, STARS_MAX
 from storage import store
@@ -48,10 +49,10 @@ async def dl_cb(call: CallbackQuery):
     if action == "audio":
         url = extra.get("music") if extra else None
         if not url:
-            await call.answer("Нет звука для этого видео.", show_alert=True)
+            await call.answer(tr(uid, "Нет звука для этого видео."), show_alert=True)
             return
         extra["music"] = None
-        await call.answer("Отправляю звук…")
+        await call.answer(tr(uid, "Отправляю звук…"))
         if extra.get("music_mode") == "ytdlp_external":
             await send_external_audio(call.message, url, uid=uid, label=label)
         else:
@@ -59,7 +60,7 @@ async def dl_cb(call: CallbackQuery):
         with contextlib.suppress(Exception):
             if call.message:
                 await call.message.edit_reply_markup(
-                    reply_markup=under_video_kb(has_music=False, has_description=bool(extra.get("description")), req_id=req_id)
+                    reply_markup=under_video_kb(has_music=False, has_description=bool(extra.get("description")), req_id=req_id, lang=get_lang(uid))
                 )
         if not extra.get("music") and not extra.get("description"):
             video_extras.pop(req_id, None)
@@ -68,17 +69,17 @@ async def dl_cb(call: CallbackQuery):
     if action == "desc":
         desc = extra.get("description") if extra else None
         if not desc:
-            await call.answer("Нет описания для этого видео.", show_alert=True)
+            await call.answer(tr(uid, "Нет описания для этого видео."), show_alert=True)
             return
         extra["description"] = None
-        await call.answer("Отправляю описание…")
+        await call.answer(tr(uid, "Отправляю описание…"))
         if call.message:
             await send_description_if_any(call.message, desc)
             store.inc_description(uid)
         with contextlib.suppress(Exception):
             if call.message:
                 await call.message.edit_reply_markup(
-                    reply_markup=under_video_kb(has_music=bool(extra.get("music")), has_description=False, req_id=req_id)
+                    reply_markup=under_video_kb(has_music=bool(extra.get("music")), has_description=False, req_id=req_id, lang=get_lang(uid))
                 )
         if not extra.get("music") and not extra.get("description"):
             video_extras.pop(req_id, None)
@@ -99,24 +100,24 @@ async def donate_cb(call: CallbackQuery):
     action = (call.data or "").split(":", 1)[-1]
     if action == "open":
         if call.message:
-            await call.message.answer(DONATE_TEXT, parse_mode="HTML", reply_markup=donate_main_kb(), link_preview_options=LinkPreviewOptions(is_disabled=True))
+            await call.message.answer(tr(uid, DONATE_TEXT), parse_mode="HTML", reply_markup=donate_main_kb(get_lang(uid)), link_preview_options=LinkPreviewOptions(is_disabled=True))
         await call.answer()
         return
 
     if action == "stars":
-        await safe_edit(call, STARS_MENU_TEXT, stars_kb())
+        await safe_edit(call, tr(uid, STARS_MENU_TEXT, a=STARS_MIN, b=STARS_MAX), stars_kb(get_lang(uid)))
         await call.answer()
         return
 
     if action == "back":
-        await safe_edit(call, DONATE_TEXT, donate_main_kb())
+        await safe_edit(call, tr(uid, DONATE_TEXT), donate_main_kb(get_lang(uid)))
         await call.answer()
         return
 
     if action == "support":
         await call.answer()
         if call.message:
-            await call.message.answer(SUPPORT_TEXT, parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
+            await call.message.answer(tr(uid, SUPPORT_TEXT), parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
         return
 
     await call.answer()
@@ -136,21 +137,21 @@ async def stars_cb(call: CallbackQuery):
         waiting_stars_amount[uid] = time.time()
         await call.answer()
         if call.message:
-            await call.message.answer(f"✍️ Введи сумму доната {STARS_MIN}–{STARS_MAX} ⭐ одним числом:", parse_mode="HTML")
+            await call.message.answer(tr(uid, "✍️ Введи сумму доната {a}–{b} ⭐ одним числом:", a=STARS_MIN, b=STARS_MAX), parse_mode="HTML")
         return
 
     try:
         stars = int(action)
     except ValueError:
-        await call.answer("❌ Ошибка суммы", show_alert=True)
+        await call.answer(tr(uid, "❌ Ошибка суммы"), show_alert=True)
         return
 
     if not stars_valid(stars):
-        await call.answer(f"❌ Сумма должна быть {STARS_MIN}–{STARS_MAX} ⭐", show_alert=True)
+        await call.answer(tr(uid, "❌ Сумма должна быть {a}–{b} ⭐", a=STARS_MIN, b=STARS_MAX), show_alert=True)
         return
 
     await call.answer()
-    await send_stars_invoice(call.bot, uid, stars)
+    await send_stars_invoice(call.bot, uid, stars, get_lang(uid))
 
 
 @dp.pre_checkout_query()
@@ -171,9 +172,7 @@ async def payment_ok(message: Message):
     store.add_stars(uid, stars)
 
     await message.answer(
-        "✅ <b>Оплата прошла!</b>\n"
-        f"Получено: <b>{stars} ⭐</b>\n\n"
-        "Спасибо за поддержку 🙌",
+        tr(message, "✅ <b>Оплата прошла!</b>\nПолучено: <b>{stars} ⭐</b>\n\nСпасибо за поддержку 🙌", stars=stars),
         parse_mode="HTML",
     )
 

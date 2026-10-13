@@ -21,6 +21,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, LinkPreviewOptions
 
 from globals_state import dp
+from i18n import tr, get_lang
 from config import SUPPORT_ADMIN_ID, SUPPORT_WAIT_TTL_SEC
 from helpers import is_admin
 from storage import store
@@ -41,7 +42,7 @@ async def support_cmd(message: Message):
 
     cleanup()
     waiting_support_message[uid] = time.time()
-    await message.answer(SUPPORT_TEXT, parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
+    await message.answer(tr(message, SUPPORT_TEXT), parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
     await log_event(
         message.bot,
         "support",
@@ -131,7 +132,7 @@ async def support_text_capture(message: Message):
         return
 
     await _deliver_to_admin(message, uid, label)
-    await message.answer(SUPPORT_SENT_TEXT, parse_mode="HTML")
+    await message.answer(tr(message, SUPPORT_SENT_TEXT), parse_mode="HTML")
 
 
 @dp.message(F.content_type != "text")
@@ -149,4 +150,4 @@ async def support_media_capture(message: Message):
         return
 
     await _deliver_to_admin(message, uid, label)
-    await message.answer(SUPPORT_SENT_TEXT, parse_mode="HTML")
+    await message.answer(tr(message, SUPPORT_SENT_TEXT), parse_mode="HTML")

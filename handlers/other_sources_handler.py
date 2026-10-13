@@ -28,9 +28,8 @@ from helpers import (
     code,
     clamp_reason,
     exc_type_name,
-    is_instagram,
-    is_vk,
-    is_pinterest,
+    detect_other_platform,
+    resolve_generic_redirect,
     extract_other_source_url,
 )
 from storage import store
@@ -50,6 +49,9 @@ PLATFORM_LABELS = {
     "instagram": ("📸", "Instagram"),
     "vk": ("🔵", "VK"),
     "pinterest": ("📌", "Pinterest"),
+    "likee": ("💗", "Likee"),
+    "twitter": ("🐦", "X (Twitter)"),
+    "ok": ("🟠", "Одноклассники"),
 }
 
 
@@ -71,13 +73,7 @@ async def _log_err(bot, platform: str, stage: str, uid: int, label: str, url: st
 
 
 def _detect_platform(text: str) -> Optional[str]:
-    if is_instagram(text):
-        return "instagram"
-    if is_vk(text):
-        return "vk"
-    if is_pinterest(text):
-        return "pinterest"
-    return None
+    return detect_other_platform(text)
 
 
 def _is_other_source_message(message: Message) -> bool:
@@ -103,6 +99,8 @@ async def other_sources_handler(message: Message):
     store.register(uid)
 
     url = extract_other_source_url(text) or text
+    if platform == "likee" and "l.likee" in url.lower():
+        url = await resolve_generic_redirect(url)
 
     ok_dl, wait_dl = lim.dl_hit(uid)
     if not ok_dl:

@@ -167,7 +167,7 @@ async def quality_choice_callback(call: CallbackQuery):
                 tmp_path = fitted
 
             with contextlib.suppress(Exception):
-                await status.edit_text("📤 Отправляю…")
+                await status.edit_text(tr(uid, "📤 Отправляю…"))
 
             try:
                 await send_external_video(
