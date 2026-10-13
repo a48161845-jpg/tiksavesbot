@@ -105,8 +105,6 @@ INLINE_CACHE_CHANNEL_ID = int(os.getenv("INLINE_CACHE_CHANNEL_ID", "0"))
 # tiktok.com / vm. / vt., из-за чего новые форматы ссылок просто игнорировались.
 TIKTOK_DOMAINS = r"(?:tiktok\.com|tiktokv\.com|tiktokv\.us|tiktok\.us|tt\.site)"
 TIKTOK_RE = re.compile(r"(?<![\w.@/=-])(?:https?://)?(?:[a-z0-9-]+\.)*" + TIKTOK_DOMAINS + r"(?=[/?#]|$|\s)", re.I)
-REDDIT_RE = re.compile(r"(https?://)?(www\.|old\.|new\.|m\.|np\.)?(reddit\.com/(r|u|user)/[^\s/]+/(comments|s)/|reddit\.com/video/|v\.redd\.it/|redd\.it/)[^\s]+", re.I)
-RUTUBE_RE = re.compile(r"(https?://)?(www\.)?rutube\.ru/(video|shorts|play/embed|live)/[^\s]+", re.I)
 # Короткие/редиректные ссылки: их надо сначала раскрыть в полный URL видео.
 TIKTOK_SHORT_RE = re.compile(
     r"^https?://(?:(?:vm|vt|vo|m|lite)\.tiktok\.com/|(?:[a-z0-9-]+\.)?tiktok\.com/t/|(?:[a-z0-9-]+\.)?tt\.site/)",
@@ -130,7 +128,36 @@ TWITTER_RE = re.compile(
     r"(https?://)?(www\.|mobile\.|m\.)?(twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com)/(?:i/web/|i/)?(?:[A-Za-z0-9_]+/)?status(?:es)?/\d+",
     re.I,
 )
-OK_RE = re.compile(r"(https?://)?(www\.|m\.|mobile\.)?(ok|odnoklassniki)\.ru/(?:video(?:embed)?|web-api/video/moviePlayer|live|movie)/[\w-]+", re.I)
+# Одноклассники: ok.ru / m.ok.ru / odnoklassniki.ru; video/ID, videoembed/ID, live/ID, movie/ID,
+# а также profile/…/video/ID, group/…/video/ID, старые ссылки dk?st.cmd=movieLayer&st.mvId=ID и web-api/video/moviePlayer/ID.
+# Перед yt-dlp ссылка приводится к https://ok.ru/video/ID (см. helpers._norm_ok).
+_OK_HOST = r"(?:[a-z0-9-]+\.)?(?:ok\.ru|odnoklassniki\.ru)"
+OK_RE = re.compile(
+    r"(?<![\w.-])(?:https?://)?" + _OK_HOST + r"/(?:"
+    r"(?:[^\s?#]*?/)?(?:video|videoembed|live|movie|movies|clips?)/\d+"
+    r"|clips?\?[^\s]*?clip_id=\d+"
+    r"|web-api/video/moviePlayer/\d+"
+    r"|dk\?[^\s]*?st\.mvId=\d+"
+    r")",
+    re.I,
+)
+# Reddit: reddit.com/r/<sub>/comments/<id>/…, reddit.com/r/<sub>/s/<код> (короткая «поделиться»), reddit.com/comments/<id>,
+# redd.it/<id>, v.redd.it/<id>; поддомены www./old./np./m./new. — любые.
+REDDIT_RE = re.compile(
+    r"(?<![\w.-])(?:https?://)?(?:"
+    r"(?:[a-z0-9-]+\.)?reddit\.com/(?:(?:r|u|user)/[^\s/?#]+/(?:comments|s)/\w+|comments/\w+)"
+    r"|(?:v\.)?redd\.it/\w+"
+    r")",
+    re.I,
+)
+# Rutube: video/<32 hex>, video/private/<id>, shorts/<id>, play/embed/<id>, embed/<id>
+RUTUBE_RE = re.compile(
+    r"(?<![\w.-])(?:https?://)?(?:www\.|m\.)?rutube\.ru/(?:video(?:/private)?|play/embed|embed|shorts)/[0-9a-f]{32}",
+    re.I,
+)
+
+# История скачиваний для /history: сколько последних записей хранить на человека.
+HISTORY_MAX_PER_USER = int(os.getenv("HISTORY_MAX_PER_USER", "300"))
 
 YOUTUBE_MAX_DURATION_SEC = int(os.getenv("YOUTUBE_MAX_DURATION_SEC", str(3 * 3600)))  # 3 часа
 # Для вертикальных Shorts yt-dlp репортит "height" как реальную высоту в

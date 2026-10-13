@@ -247,7 +247,7 @@ async def send_music_if_any(
     try:
         await message.answer_audio(music_url, caption=tr(message, CAPTION_AUDIO), parse_mode="HTML")
         if uid is not None:
-            store.inc_audio(uid, 1)
+            store.inc_audio(uid, 1, url=src or "", source="tiktok")
         if label is not None:
             await log_event(
                 message.bot,
@@ -266,7 +266,7 @@ async def send_music_if_any(
             await provider.download_to_file(music_url, tmp, MAX_AUDIO_BYTES, stage="audio")
             await message.answer_audio(FSInputFile(tmp), caption=tr(message, CAPTION_AUDIO), parse_mode="HTML")
             if uid is not None:
-                store.inc_audio(uid, 1)
+                store.inc_audio(uid, 1, url=src or "", source="tiktok")
             if label is not None:
                 await log_event(
                     message.bot,
@@ -368,7 +368,7 @@ async def send_external_audio(
         tmp_path = await download_audio_only(src_url, Path("."))
         await message.answer_audio(FSInputFile(tmp_path), caption=tr(message, CAPTION_AUDIO), parse_mode="HTML")
         if uid is not None:
-            store.inc_audio(uid, 1)
+            store.inc_audio(uid, 1, url=src_url)
         if label is not None:
             await log_event(
                 message.bot,

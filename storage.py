@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any, List, Tuple
 
 import asyncpg
 
-from config import DATABASE_URL, DATA_FILE, log
+from config import DATABASE_URL, DATA_FILE, HISTORY_MAX_PER_USER, log
 
 # Если DATABASE_URL не задан, fallback на JSON-файл (для локальной разработки)
 _USE_DB = bool(DATABASE_URL)
@@ -123,6 +123,7 @@ class Storage:
             "inline_cache": {},  # url_hash -> {"file_id","kind","ts"} — кэш для inline-режима
             "maintenance": {"enabled": False, "text": ""},  # технический режим (/tex)
             "user_lang": {},  # uid_str -> "ru" | "en" | "uk" (язык интерфейса бота)
+            "history": {},  # uid_str -> [{"ts","k","s","n","u","t"}, ...] — последние скачивания (для /history)
         }
 
     # ---------- async load ----------
@@ -297,7 +298,30 @@ class Storage:
         self._touch_seen(uid)
         return False
 
-    def inc_download(self, uid: int, kind: str, items: int = 1, source: str = "tiktok") -> None:
+    # ---------- история скачиваний (/history) ----------
+    def _add_history(self, uid: int, kind: str, source: str, items: int, url: str = "", title: str = "") -> None:
+        """Короткая запись о скачивании; хранится не больше HISTORY_MAX_PER_USER последних на человека."""
+        try:
+            hist = self.data.setdefault("history", {}).setdefault(str(uid), [])
+            hist.append({
+                "ts": int(time.time()),
+                "k": kind,
+                "s": source,
+                "n": int(items),
+                "u": (url or "")[:300],
+                "t": " ".join((title or "").split())[:100],
+            })
+            cap = max(1, int(HISTORY_MAX_PER_USER))
+            if len(hist) > cap:
+                del hist[: len(hist) - cap]
+        except Exception as e:  # история — вспомогательная, не должна ронять скачивание
+            log.warning("Storage: history add error: %s", e)
+
+    def get_history(self, uid: int) -> List[Dict[str, Any]]:
+        return list(self.data.get("history", {}).get(str(uid), []))
+
+    def inc_download(self, uid: int, kind: str, items: int = 1, source: str = "tiktok",
+                     url: str = "", title: str = "") -> None:
         from helpers import msk_now, period_keys
         now_dt = msk_now()
         keys = period_keys(now_dt)
@@ -342,6 +366,7 @@ class Storage:
             bucket_by_source = bucket.setdefault("by_source", {})
             bucket_by_source[source] = int(bucket_by_source.get(source, 0)) + 1
 
+        self._add_history(uid, kind, source, items, url, title)
         self._touch_seen(uid)
         self._mark_dirty()
 
@@ -521,7 +546,7 @@ class Storage:
         self._mark_dirty()
         return value
 
-    def inc_audio(self, uid: int, items: int = 1) -> None:
+    def inc_audio(self, uid: int, items: int = 1, url: str = "", source: str = "") -> None:
         from helpers import msk_now, period_keys
         now_dt = msk_now()
         keys = period_keys(now_dt)
@@ -545,6 +570,7 @@ class Storage:
             bucket = self._user_period_rec(uid, mode, key)
             bucket["audio_sent"] = int(bucket.get("audio_sent", 0)) + items
 
+        self._add_history(uid, "audio", source, items, url)
         self._touch_seen(uid)
         self._mark_dirty()
 

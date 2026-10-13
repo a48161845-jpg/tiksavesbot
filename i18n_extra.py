@@ -120,6 +120,16 @@ def register_extra(_reg) -> None:
         ("Это фото-слайдшоу — в инлайне только видео", "This is a photo slideshow — inline supports video only", "Це фото-слайдшоу — в inline лише відео", "Бұл фото-слайдшоу — inline-да тек бейне", "Bu foto-slayd — inline’da faqat video", "Бул фото-слайдшоу — inline’да видео гана"),
         ("Открой бота @tiksavesbot и нажми /start, затем повтори", "Open the bot @tiksavesbot and press /start, then try again", "Відкрий бота @tiksavesbot і натисни /start, потім повтори", "@tiksavesbot ботын ашып, /start басыңыз, содан кейін қайталаңыз", "@tiksavesbot botini oching va /start bosing, soʻng qayta urining", "@tiksavesbot ботун ачып, /start басыңыз, анан кайра аракет кылыңыз"),
         ("Не удалось скачать (приватное/недоступное видео?)", "Couldn't download (private/unavailable video?)", "Не вдалося завантажити (приватне/недоступне відео?)", "Жүктеу мүмкін болмады (жеке/қолжетімсіз бейне ме?)", "Yuklab boʻlmadi (maxfiy/mavjud boʻlmagan video?)", "Жүктөө мүмкүн болгон жок (жеке/жеткиликсиз видео?)"),
+        # ---------------- /history ----------------
+        ("📭 История скачиваний пока пуста. Пришли ссылку — и она появится здесь.", "📭 Your download history is empty for now. Send a link and it will show up here.", "📭 Історія завантажень поки порожня. Надішли посилання — і воно з'явиться тут.", "📭 Жүктеу тарихы әзірге бос. Сілтеме жіберіңіз — ол осында пайда болады.", "📭 Yuklab olish tarixi hozircha boʻsh. Havola yuboring — u shu yerda paydo boʻladi.", "📭 Жүктөө тарыхы азырынча бош. Шилтеме жөнөтүңүз — ал ушул жерде пайда болот."),
+        ("🧾 История скачиваний: {n} шт. (хранятся последние {cap}).", "🧾 Download history: {n} items (the last {cap} are kept).", "🧾 Історія завантажень: {n} шт. (зберігаються останні {cap}).", "🧾 Жүктеу тарихы: {n} дана (соңғы {cap} сақталады).", "🧾 Yuklab olish tarixi: {n} ta (oxirgi {cap} tasi saqlanadi).", "🧾 Жүктөө тарыхы: {n} даана (акыркы {cap} сакталат)."),
+        ("История скачиваний", "Download history", "Історія завантажень", "Жүктеу тарихы", "Yuklab olish tarixi", "Жүктөө тарыхы"),
+        ("Пользователь", "User", "Користувач", "Пайдаланушы", "Foydalanuvchi", "Колдонуучу"),
+        ("Сформировано (МСК)", "Generated (MSK)", "Сформовано (МСК)", "Құрастырылды (МСК)", "Shakllantirildi (MSK)", "Түзүлдү (МСК)"),
+        ("Записей", "Entries", "Записів", "Жазбалар", "Yozuvlar", "Жазуулар"),
+        ("видео", "video", "відео", "бейне", "video", "видео"),
+        ("фото", "photo", "фото", "фото", "foto", "сүрөт"),
+        ("звук", "audio", "звук", "дыбыс", "audio", "үн"),
     ]
     for r in rows:
         _reg(*r)

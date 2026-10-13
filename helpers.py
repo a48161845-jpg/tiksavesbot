@@ -256,6 +256,9 @@ def is_twitter(text: str) -> bool:
 def is_ok(text: str) -> bool:
     return bool(OK_RE.search(text or ""))
 
+def is_rutube(text: str) -> bool:
+    return bool(RUTUBE_RE.search(text or ""))
+
 # (platform, regex) — порядок важен только для читаемости, паттерны не пересекаются.
 _OTHER_PLATFORMS = (
     ("instagram", INSTAGRAM_RE),
@@ -276,14 +279,47 @@ def detect_other_platform(text: str) -> Optional[str]:
     return None
 
 def is_other_source(text: str) -> bool:
-    """Instagram / VK / Pinterest / Likee / X / OK — всё, что идёт через тот же движок, что и YouTube."""
+    """Instagram / VK / Pinterest / Likee / X / OK / Rutube / Reddit — всё, что идёт через тот же движок, что и YouTube."""
     return detect_other_platform(text) is not None
 
 _TW_MIRRORS_RE = re.compile(r"://(?:www\.|mobile\.|m\.)?(?:fxtwitter|vxtwitter|fixupx)\.com/", re.I)
 
+_OK_ID_RES = (
+    re.compile(r"[?&]clip_id=(\d+)", re.I),  # ok.ru/clip?owner_id=-123&clip_id=456 (клипы)
+    re.compile(r"/(?:video|videoembed|live|movie|movies|clips?)/(\d+)", re.I),
+    re.compile(r"/moviePlayer/(\d+)", re.I),
+    re.compile(r"[?&]st\.mvId=(\d+)", re.I),
+)
+_RUTUBE_ID_RE = re.compile(r"rutube\.ru/(video/private|video|play/embed|embed|shorts)/([0-9a-f]{32})", re.I)
+
+def _norm_ok(url: str) -> str:
+    """Любую ссылку OK на видео -> https://ok.ru/video/ID (так её понимает yt-dlp)."""
+    for rx in _OK_ID_RES:
+        m = rx.search(url)
+        if m:
+            kind = "live" if re.search(r"/live/\d+", url, re.I) else "video"
+            return f"https://ok.ru/{kind}/{m.group(1)}"
+    return url
+
+def _norm_rutube(url: str) -> str:
+    """shorts/embed -> обычная страница видео; private сохраняем вместе с ключом ?p=…"""
+    m = _RUTUBE_ID_RE.search(url)
+    if not m:
+        return url
+    kind, vid = m.group(1).lower(), m.group(2).lower()
+    if kind == "video/private":
+        q = re.search(r"[?&]p=([\w-]+)", url)
+        return f"https://rutube.ru/video/private/{vid}/" + (f"?p={q.group(1)}" if q else "")
+    return f"https://rutube.ru/video/{vid}/"
+
 def _fix_other_url(url: str) -> str:
     # зеркала X (fxtwitter и т.п.) yt-dlp не знает — возвращаем настоящий домен
-    return _TW_MIRRORS_RE.sub("://twitter.com/", url)
+    url = _TW_MIRRORS_RE.sub("://twitter.com/", url)
+    if OK_RE.search(url):
+        return _norm_ok(url)
+    if RUTUBE_RE.search(url):
+        return _norm_rutube(url)
+    return url
 
 def extract_other_source_url(text: str) -> Optional[str]:
     u = _extract_other_source_url_raw(text)

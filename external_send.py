@@ -78,5 +78,6 @@ async def send_external_video(
     finally:
         cleanup_video_kwargs(meta)
 
-    store.inc_download(uid, "video", items=1, source=source)
+    store.inc_download(uid, "video", items=1, source=source, url=src,
+                       title=str(dl_info.get("title") or info.get("title") or ""))
     await after_download_hooks(message.bot, uid, label)

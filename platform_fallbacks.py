@@ -15,6 +15,18 @@ Likee
     2) Если yt-dlp всё равно не смог — читаем страницу и берём video_url из
        window.data (best effort: Likee меняет вёрстку).
 
+Одноклассники (в т.ч. клипы ok.ru/clip?…&clip_id=…)
+    Если yt-dlp не смог — тот же запрос метаданных, что делает сам плеер OK
+    (POST https://ok.ru/dk, cmd=videoPlayerMetadata, mid=<id>) -> прямые mp4.
+
+Reddit
+    С IP дата-центров Reddit отвечает yt-dlp "Account authentication is required".
+    Обход без cookies: 1) раскрываем короткую ссылку (/s/…, redd.it) и берём id поста;
+    2) читаем JSON поста (www/old.reddit.com, хосты можно задать REDDIT_JSON_HOSTS) и
+    качаем DASH-видео + аудиодорожку v.redd.it, склеивая ffmpeg-ом;
+    3) если JSON закрыт — OG-страница зеркал (vxreddit.com, rxddit.com; свои — через
+    REDDIT_MIRRORS), там уже лежит прямой mp4.
+
 Всё вернёт info-словарь в формате yt-dlp (formats/height/duration/title/…),
 чтобы дальше работали list_qualities() и отправка без изменений.
 """
@@ -55,8 +67,16 @@ def is_likee_url(url: str) -> bool:
     return bool(re.search(r"(?:^|//|\.)(?:likee\.video|likee\.com|like-video\.com)/", url or "", re.I))
 
 
+def is_reddit_url(url: str) -> bool:
+    return bool(re.search(r"(?:^|//|\.)(?:reddit\.com|redd\.it)/", url or "", re.I))
+
+
+def is_ok_url(url: str) -> bool:
+    return bool(re.search(r"(?:^|//|\.)(?:ok\.ru|odnoklassniki\.ru)/", url or "", re.I))
+
+
 def has_fallback(url: str) -> bool:
-    return is_twitter_url(url) or is_likee_url(url)
+    return is_twitter_url(url) or is_likee_url(url) or is_reddit_url(url) or is_ok_url(url)
 
 
 def _height_from_url(u: str) -> int:
@@ -289,50 +309,339 @@ async def likee_candidates(url: str) -> List[str]:
     return cands
 
 
+_BAD_KEY_PARTS = ("cover", "thumb", "img", "image", "pic", "avatar", "music", "audio", "sound", "head", "icon", "gif")
+
+
+def _unescape_url(u: str) -> str:
+    return (u.replace("\\u002F", "/").replace("\\/", "/").replace("&amp;", "&")
+             .replace("\\u0026", "&").strip())
+
+
+def _deep_video_urls(obj: Any, out: Optional[List[Any]] = None, path: str = "") -> List[Any]:
+    """Рекурсивно собирает (приоритет, url, dict-родитель) для полей, похожих на ссылку на видео."""
+    if out is None:
+        out = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            kl = str(k).lower().replace("_", "")
+            if isinstance(v, str) and v.startswith(("http://", "https://", "//")) and "url" in kl \
+                    and not any(b in kl for b in _BAD_KEY_PARTS):
+                is_vid = "video" in kl or v.split("?")[0].lower().endswith((".mp4", ".mov"))
+                if is_vid:
+                    nowm = any(x in kl for x in ("nowatermark", "nowm", "withoutwm", "origin"))
+                    wm = "wm" in kl and not nowm
+                    out.append(((0 if nowm else 2 if wm else 1), v, obj))
+            else:
+                _deep_video_urls(v, out, f"{path}/{k}")
+    elif isinstance(obj, list):
+        for it in obj:
+            _deep_video_urls(it, out, path)
+    return out
+
+
+def _likee_pick(obj: Any) -> Optional[Dict[str, Any]]:
+    found = _deep_video_urls(obj)
+    if not found:
+        return None
+    found.sort(key=lambda t: t[0])
+    prio, url, parent = found[0]
+    if url.startswith("//"):
+        url = "https:" + url
+    g = lambda *ks: next((parent.get(k) for k in ks if parent.get(k)), 0)  # noqa: E731
+    return {
+        "url": _unescape_url(url),
+        "width": int(g("videoWidth", "video_width", "width") or 0),
+        "height": int(g("videoHeight", "video_height", "height") or 0),
+        "duration": int(g("videoDuration", "video_duration", "duration") or 0),
+        "title": str(g("msgText", "msg_text", "title", "desc") or ""),
+    }
+
+
+def _likee_post_ids(*urls: str) -> List[str]:
+    ids: List[str] = []
+    for u in urls:
+        for rx in (r"/video/(\d{8,})", r"[?&]post_?[iI]d=(\d{8,})"):
+            m = re.search(rx, u or "")
+            if m and m.group(1) not in ids:
+                ids.append(m.group(1))
+    return ids
+
+
+async def _likee_api_info(session: "aiohttp.ClientSession", post_id: str) -> Optional[Dict[str, Any]]:
+    """Публичные API-эндпоинты сайта Likee: по числовому postId отдают ссылки на видео."""
+    hdrs = {"User-Agent": _UA_DESKTOP, "Origin": "https://likee.video", "Referer": "https://likee.video/",
+            "Accept": "application/json, text/plain, */*"}
+    attempts = (
+        ("https://likee.video/official_website/VideoApi/getVideoInfo", {"data": {"postIds": post_id}}),
+        ("https://api.like-video.com/likee-activity-flow-micro/videoApi/getVideoInfo",
+         {"json": {"postIds": post_id, "lang": "en"}}),
+    )
+    for api, kw in attempts:
+        try:
+            async with session.post(api, headers=hdrs, **kw) as r:
+                if r.status >= 400:
+                    continue
+                js = await r.json(content_type=None)
+        except Exception:
+            continue
+        pick = _likee_pick(js)
+        if pick:
+            return pick
+    return None
+
+
+def _likee_pick_from_html(html: str) -> Optional[Dict[str, Any]]:
+    blobs: List[Any] = []
+    m = re.search(r"window\.data\s*=\s*({.+?});\s*(?:</script>|window\.|$)", html, re.S)
+    if m:
+        with contextlib.suppress(Exception):
+            blobs.append(json.loads(m.group(1)))
+    for m in re.finditer(r'<script[^>]*type=["\']application/(?:json|ld\+json)["\'][^>]*>(.+?)</script>', html, re.S | re.I):
+        with contextlib.suppress(Exception):
+            blobs.append(json.loads(m.group(1)))
+    m = re.search(r'<script[^>]*id=["\']__NEXT_DATA__["\'][^>]*>(.+?)</script>', html, re.S | re.I)
+    if m:
+        with contextlib.suppress(Exception):
+            blobs.append(json.loads(m.group(1)))
+    for b in blobs:
+        pick = _likee_pick(b)
+        if pick:
+            return pick
+    mv = re.search(r'<meta[^>]+property=["\']og:video(?::url|:secure_url)?["\'][^>]+content=["\']([^"\']+)', html, re.I)
+    if mv:
+        return {"url": _unescape_url(mv.group(1)), "width": 0, "height": 0, "duration": 0, "title": ""}
+    # последняя надежда: любой .mp4 в тексте страницы (кроме явных превью)
+    for u in re.findall(r'https?:?\\?/\\?/[^"\'\s<>]+?\.mp4[^"\'\s<>]*', html):
+        u = _unescape_url(u)
+        if not any(b in u.lower() for b in ("cover", "thumb", "preview")):
+            return {"url": u, "width": 0, "height": 0, "duration": 0, "title": ""}
+    return None
+
+
 async def likee_page_info(url: str, cands: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Best effort: достаём video_url из window.data страницы likee.video."""
+    """
+    Best effort, без yt-dlp:
+      1) по числовому postId (из /video/<id> или ?postId=) — API сайта Likee;
+      2) разбор HTML страницы (window.data / JSON-блоки / og:video / любой .mp4).
+    """
     cands = cands or await likee_candidates(url)
     if not cands:
         raise RuntimeError("Likee: не удалось понять ссылку (после раскрытия — корень сайта)")
-    last: Optional[str] = None
+    errors: List[str] = []
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as s:
+        for pid in _likee_post_ids(url, *cands):
+            pick = await _likee_api_info(s, pid)
+            if pick:
+                return _make_info(vid=pid, url=cands[0], media_url=pick["url"], title=pick["title"],
+                                  duration=pick["duration"], width=pick["width"], height=pick["height"],
+                                  source="likee-api")
+            errors.append(f"api[{pid}]: нет данных")
         for cand in cands:
             try:
                 async with s.get(cand, headers={"User-Agent": _UA_DESKTOP, "Accept": "text/html,*/*"}) as r:
                     if r.status >= 400:
-                        last = f"HTTP {r.status}"
+                        errors.append(f"page: HTTP {r.status}")
                         continue
                     html = await r.text(errors="ignore")
             except Exception as e:
-                last = type(e).__name__
+                errors.append(f"page: {type(e).__name__}")
                 continue
-            data: Dict[str, Any] = {}
-            m = re.search(r"window\.data\s*=\s*({.+?});\s*(?:</script>|window\.|$)", html, re.S)
-            if m:
-                with contextlib.suppress(Exception):
-                    data = json.loads(m.group(1))
-            video_url = (
-                data.get("video_url")
-                or (data.get("originVideoInfo") or {}).get("video_url")
-                or None
-            )
-            if not video_url:
-                mv = re.search(r'<meta[^>]+property=["\']og:video(?::url)?["\'][^>]+content=["\']([^"\']+)', html, re.I)
-                video_url = mv.group(1) if mv else None
-            if not video_url:
-                last = "в странице нет video_url (пост закрыт/удалён или Likee поменял вёрстку)"
+            pick = _likee_pick_from_html(html)
+            if not pick:
+                errors.append("page: нет ссылки на видео (закрыт/удалён или Likee поменял вёрстку)")
                 continue
             vid = (re.search(r"/(?:v|video)/(\w+)", cand) or [None, uuid.uuid4().hex[:8]])[1]
-            return _make_info(
-                vid=vid, url=cand, media_url=video_url,
-                title=str(data.get("msg_text") or data.get("title") or ""),
-                duration=int((data.get("video_duration") or 0)),
-                width=int(data.get("video_width") or 0), height=int(data.get("video_height") or 0),
-                source="likee-page",
-            )
-    raise RuntimeError(f"Likee fallback не сработал: {last or 'нет ответа'}")
+            return _make_info(vid=vid, url=cand, media_url=pick["url"], title=pick["title"],
+                              duration=pick["duration"], width=pick["width"], height=pick["height"],
+                              source="likee-page")
+    raise RuntimeError("Likee fallback не сработал: " + "; ".join(errors[-3:] or ["нет ответа"]))
 
+
+# ------------------------------------------------------------- Одноклассники (клипы)
+_OK_QUALITY = {"mobile": 144, "lowest": 240, "low": 360, "sd": 480, "hd": 720, "full": 1080, "quad": 1440, "ultra": 2160}
+
+
+def _ok_video_id(url: str) -> Optional[str]:
+    for rx in (r"[?&]clip_id=(\d+)", r"[?&]st\.mvId=(\d+)", r"/(?:video|videoembed|live|movie|movies|clips?|moviePlayer)/(\d+)"):
+        m = re.search(rx, url or "", re.I)
+        if m:
+            return m.group(1)
+    return None
+
+
+async def ok_meta_info(url: str) -> Dict[str, Any]:
+    mid = _ok_video_id(url)
+    if not mid:
+        raise RuntimeError("OK: не нашёл id видео в ссылке")
+    hdrs = {"User-Agent": _UA_DESKTOP, "Referer": "https://ok.ru/", "Origin": "https://ok.ru",
+            "Accept": "application/json, text/plain, */*"}
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        try:
+            async with s.post("https://ok.ru/dk", headers=hdrs,
+                              data={"cmd": "videoPlayerMetadata", "mid": mid}) as r:
+                if r.status >= 400:
+                    raise RuntimeError(f"HTTP {r.status}")
+                js = await r.json(content_type=None)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"OK fallback: {type(e).__name__}")
+    if not isinstance(js, dict):
+        raise RuntimeError("OK fallback: неожиданный ответ")
+    if js.get("error"):
+        raise RuntimeError(f"OK fallback: {str(js.get('error'))[:80]}")
+    videos = [v for v in (js.get("videos") or []) if isinstance(v, dict) and v.get("url")]
+    if not videos:
+        raise RuntimeError("OK fallback: в ответе нет ссылок на видео (закрыто/удалено/только HLS)")
+    videos.sort(key=lambda v: _OK_QUALITY.get(str(v.get("name") or "").lower(), 0))
+    capped = [v for v in videos if _OK_QUALITY.get(str(v.get("name") or "").lower(), 0) <= 1080] or videos
+    best = capped[-1]
+    movie = js.get("movie") if isinstance(js.get("movie"), dict) else {}
+    return _make_info(
+        vid=mid, url=url, media_url=str(best["url"]).replace("&amp;", "&"),
+        title=str(movie.get("title") or ""), duration=int(movie.get("duration") or 0),
+        height=_OK_QUALITY.get(str(best.get("name") or "").lower(), 0), source="ok-meta",
+    )
+
+
+# ----------------------------------------------------------------------- Reddit
+_REDDIT_JSON_HOSTS = [
+    h.strip().rstrip("/")
+    for h in os.getenv("REDDIT_JSON_HOSTS", "https://www.reddit.com,https://old.reddit.com").split(",")
+    if h.strip()
+]
+_REDDIT_MIRRORS = [
+    h.strip().rstrip("/")
+    for h in os.getenv("REDDIT_MIRRORS", "https://vxreddit.com,https://rxddit.com").split(",")
+    if h.strip()
+]
+_UA_BOT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
+_REDDIT_ID_RES = (
+    re.compile(r"/comments/(\w+)", re.I),
+    re.compile(r"(?://|\.)(?:v\.)?redd\.it/(\w+)", re.I),
+)
+_REDDIT_AUDIO_NAMES = (
+    "DASH_AUDIO_128.mp4", "DASH_audio.mp4", "DASH_AUDIO_64.mp4",
+    "CMAF_AUDIO_128.mp4", "CMAF_audio.mp4", "CMAF_AUDIO_64.mp4",
+)
+
+
+def _reddit_post_id(url: str) -> Optional[str]:
+    for rx in _REDDIT_ID_RES:
+        m = rx.search(url or "")
+        if m:
+            return m.group(1)
+    return None
+
+
+async def _reddit_resolve(session: "aiohttp.ClientSession", url: str) -> str:
+    """Короткие ссылки /s/xxxx и redd.it/xxxx -> полный URL поста (редиректы вручную)."""
+    if not url.startswith("http"):
+        url = "https://" + url
+    cur = url
+    try:
+        for _ in range(6):
+            async with session.get(cur, allow_redirects=False,
+                                   headers={"User-Agent": _UA_MOBILE, "Accept": "text/html,*/*"}) as r:
+                loc = r.headers.get("Location")
+                if r.status in (301, 302, 303, 307, 308) and loc:
+                    cur = urljoin(cur, loc)
+                    if "/comments/" in cur:
+                        return cur
+                    continue
+                break
+    except Exception:
+        pass
+    return cur
+
+
+def _reddit_post_from_json(js: Any) -> Dict[str, Any]:
+    try:
+        post = js[0]["data"]["children"][0]["data"]
+    except Exception:
+        raise RuntimeError("Reddit: неожиданный формат JSON")
+    xp = post.get("crosspost_parent_list")
+    if isinstance(xp, list) and xp and isinstance(xp[0], dict):
+        post = xp[0]
+    return post
+
+
+def _reddit_info_from_post(post: Dict[str, Any], url: str, pid: str) -> Dict[str, Any]:
+    media = (post.get("secure_media") or post.get("media") or {}).get("reddit_video") \
+        or (post.get("preview") or {}).get("reddit_video_preview")
+    if not isinstance(media, dict) or not media.get("fallback_url"):
+        dom = str(post.get("domain") or "")
+        raise RuntimeError(f"Reddit: в посте нет видео на v.redd.it" + (f" (внешняя ссылка: {dom})" if dom else ""))
+    vurl = str(media["fallback_url"])
+    is_gif = bool(media.get("is_gif"))
+    audio_urls: List[str] = []
+    m = re.match(r"(https?://[^/]+/[^/]+/)", vurl)
+    if m and not is_gif and media.get("has_audio", True) is not False:
+        audio_urls = [m.group(1) + n for n in _REDDIT_AUDIO_NAMES]
+    info = _make_info(
+        vid=pid, url=url, media_url=vurl, title=str(post.get("title") or ""),
+        duration=int(media.get("duration") or 0), width=int(media.get("width") or 0),
+        height=int(media.get("height") or 0), source="reddit-json",
+        has_audio=bool(audio_urls),
+    )
+    info["_audio_urls"] = audio_urls
+    return info
+
+
+async def reddit_info(url: str) -> Dict[str, Any]:
+    errors: List[str] = []
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        full = url if "/comments/" in url else await _reddit_resolve(s, url)
+        pid = _reddit_post_id(full) or _reddit_post_id(url)
+        if not pid:
+            raise RuntimeError("Reddit: не нашёл id поста в ссылке")
+
+        # 1) JSON поста
+        for host in _REDDIT_JSON_HOSTS:
+            api = f"{host}/comments/{pid}/.json?raw_json=1"
+            try:
+                async with s.get(api, headers={"User-Agent": _UA_DESKTOP, "Accept": "application/json"}) as r:
+                    if r.status >= 400:
+                        errors.append(f"{urlparse(host).hostname}: HTTP {r.status}")
+                        continue
+                    js = await r.json(content_type=None)
+                return _reddit_info_from_post(_reddit_post_from_json(js), url, pid)
+            except Exception as e:
+                errors.append(f"{urlparse(host).hostname}: {_short_err(e)}")
+
+        # 2) зеркала: OG-страница с прямым mp4
+        path = urlparse(full).path or f"/comments/{pid}"
+        for host in _REDDIT_MIRRORS:
+            try:
+                async with s.get(host + path, headers={"User-Agent": _UA_BOT, "Accept": "text/html,*/*"}) as r:
+                    if r.status >= 400:
+                        errors.append(f"{urlparse(host).hostname}: HTTP {r.status}")
+                        continue
+                    html = await r.text(errors="ignore")
+                mv = re.search(r'<meta[^>]+property=["\']og:video(?::url|:secure_url)?["\'][^>]+content=["\']([^"\']+)', html, re.I) \
+                    or re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:video', html, re.I)
+                if not mv:
+                    errors.append(f"{urlparse(host).hostname}: нет og:video")
+                    continue
+                media_url = mv.group(1).replace("&amp;", "&")
+                if media_url.startswith("/"):
+                    media_url = host + media_url
+                mt = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']*)', html, re.I)
+                mh = re.search(r'og:video:height["\'][^>]+content=["\'](\d+)', html, re.I)
+                info = _make_info(vid=pid, url=url, media_url=media_url, title=(mt.group(1) if mt else ""),
+                                  height=int(mh.group(1)) if mh else 0, source="reddit-mirror")
+                info["_audio_urls"] = []
+                return info
+            except Exception as e:
+                errors.append(f"{urlparse(host).hostname}: {_short_err(e)}")
+    raise RuntimeError("Reddit fallback не сработал: " + "; ".join(errors or ["нет ответа"]))
+
+
+def _short_err(e: BaseException) -> str:
+    return (str(e) or type(e).__name__).replace("\n", " ")[:80]
 
 # -------------------------------------------------------------- единая точка входа
 async def fallback_info(url: str, likee_cands: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -340,17 +649,58 @@ async def fallback_info(url: str, likee_cands: Optional[List[str]] = None) -> Di
         return await twitter_fx_info(url)
     if is_likee_url(url):
         return await likee_page_info(url, likee_cands)
+    if is_reddit_url(url):
+        return await reddit_info(url)
+    if is_ok_url(url):
+        return await ok_meta_info(url)
     raise RuntimeError("для этой площадки нет запасного способа")
 
 
-async def fallback_download(info: Dict[str, Any], out_dir: Path, max_bytes: int = 0) -> Path:
+async def fallback_download(info: Dict[str, Any], out_dir: Path, max_bytes: int = 0,
+                            ffmpeg: Optional[str] = None) -> Path:
     media_url = info.get("_direct_url")
     if not media_url:
         raise RuntimeError("fallback: нет прямой ссылки")
     headers = {}
     if info.get("_fallback") == "likee-page":
         headers["Referer"] = "https://likee.video/"
-    return await download_direct(media_url, out_dir, max_bytes=max_bytes, headers=headers)
+    if str(info.get("_fallback", "")).startswith("reddit"):
+        headers["Referer"] = "https://www.reddit.com/"
+    if info.get("_fallback") == "ok-meta":
+        headers["Referer"] = "https://ok.ru/"
+    video = await download_direct(media_url, out_dir, max_bytes=max_bytes, headers=headers)
+
+    # Reddit: видео и звук лежат отдельными файлами — склеиваем (без ffmpeg отдаём видео без звука).
+    audio_urls = info.get("_audio_urls") or []
+    if audio_urls and ffmpeg:
+        for aurl in audio_urls:
+            try:
+                audio = await download_direct(aurl, out_dir, max_bytes=max_bytes, headers=headers, suffix=".m4a")
+            except Exception:
+                continue
+            try:
+                merged = await ffmpeg_merge(ffmpeg, video, audio)
+                video.unlink(missing_ok=True)
+                return merged
+            except Exception:
+                break
+            finally:
+                audio.unlink(missing_ok=True)
+    return video
+
+
+async def ffmpeg_merge(ffmpeg: str, video: Path, audio: Path) -> Path:
+    dst = video.with_name(video.stem + "_m.mp4")
+    proc = await asyncio.create_subprocess_exec(
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(video), "-i", str(audio),
+        "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", str(dst),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await proc.communicate()
+    if proc.returncode != 0 or not dst.exists() or dst.stat().st_size <= 0:
+        dst.unlink(missing_ok=True)
+        raise RuntimeError("ffmpeg не смог склеить видео и звук: " + (err or b"").decode("utf-8", "ignore")[:200])
+    return dst
 
 
 async def ffmpeg_to_mp3(ffmpeg: str, src: Path) -> Path:
