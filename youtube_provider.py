@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yt_dlp
 
+from twitter_fallback import is_twitter_url, fetch_twitter_media, pick_video, download_direct
+
 from config import (
     YOUTUBE_MAX_HEIGHT,
     YOUTUBE_CONCURRENT_FRAGMENTS,
@@ -39,11 +41,6 @@ except ImportError:  # файл не залит в репозиторий — п
 
     async def cobalt_download(*_a, **_k):
         raise RuntimeError("cobalt_client.py отсутствует")
-
-
-from platform_fallbacks import (
-    has_fallback, is_likee_url, likee_candidates, fallback_info, fallback_download, ffmpeg_to_mp3,
-)
 
 
 class YoutubeTooLargeError(Exception):
@@ -448,8 +445,8 @@ def _probe_sync(url: str) -> Dict[str, Any]:
     return best_info
 
 
-async def _probe_youtube_ytdlp(url: str) -> Dict[str, Any]:
-    """Узнаёт длительность/название/доступные качества БЕЗ скачивания (только yt-dlp + cobalt)."""
+async def probe_youtube(url: str) -> Dict[str, Any]:
+    """Узнаёт длительность/название/доступные качества БЕЗ скачивания."""
     try:
         return await asyncio.to_thread(_probe_sync, url)
     except Exception as e:
@@ -458,6 +455,20 @@ async def _probe_youtube_ytdlp(url: str) -> Dict[str, Any]:
         if is_auth_wall_error(e) and cobalt_enabled():
             return {"_cobalt": True, "formats": [], "duration": 0, "title": "", "webpage_url": url,
                     "acodec": "unknown"}
+        if is_twitter_url(url):
+            # 18+/закрытые для гостей твиты: берём прямые ссылки через FxTwitter/VxTwitter
+            try:
+                data = await fetch_twitter_media(url)
+            except Exception:
+                raise e
+            fmts = [
+                {"format_id": f"tw{i}", "height": v["height"] or 720, "width": v["width"] or None, "vcodec": "avc1",
+                 "acodec": "mp4a", "ext": "mp4", "url": v["url"]}
+                for i, v in enumerate(data["videos"])
+            ]
+            dur = max([v.get("duration") or 0 for v in data["videos"]] or [0])
+            return {"_twitter_fx": True, "formats": fmts, "duration": int(dur), "title": data["title"],
+                    "webpage_url": url, "acodec": "mp4a"}
         raise
 
 
@@ -546,7 +557,7 @@ def _format_for_height(height: Optional[int]) -> str:
     return "best[ext=mp4]/best"
 
 
-async def _download_youtube_ytdlp(
+async def download_youtube(
     url: str,
     out_dir: Path,
     max_height: int = YOUTUBE_MAX_HEIGHT,
@@ -559,13 +570,13 @@ async def _download_youtube_ytdlp(
     """
     info_holder: Dict[str, Any] = {}
 
-    def _run(clients: Optional[List[str]] = None, tag: str = "") -> Path:
+    def _run(clients: Optional[List[str]] = None, tag: str = "", fmt_override: Optional[str] = None) -> Path:
         # tag — уникальный суффикс имени: попытки разными клиентами и параллельные
         # скачивания одного видео не затирают файлы друг друга.
         out_template = str(out_dir / f"%(id)s{tag}.%(ext)s")
 
         effective_height = quality_height or max_height
-        fmt = _format_for_height(effective_height)
+        fmt = fmt_override or _format_for_height(effective_height)
 
         opts = _base_opts(
             {
@@ -599,7 +610,14 @@ async def _download_youtube_ytdlp(
         следующий набор; в итоге оставляет лучший файл. Возвращает (путь, высота, цель).
         """
         if not _is_youtube_url(url):
-            p = _run(None, f".{uuid.uuid4().hex[:6]}")
+            try:
+                p = _run(None, f".{uuid.uuid4().hex[:6]}")
+            except Exception as first:
+                # у X/OK/Rutube/Likee форматы бывают без height/с нестандартными ключами —
+                # повторяем с максимально мягким селектором
+                if "File too large" in str(first):
+                    raise
+                p = _run(None, f".{uuid.uuid4().hex[:6]}", "bv*+ba/b" if _FFMPEG_PATH else "best")
             return p, 0, 0
 
         wanted = quality_height or max_height
@@ -656,6 +674,17 @@ async def _download_youtube_ytdlp(
             except Exception:
                 pass
     except Exception as e:
+        if is_twitter_url(url):
+            try:
+                data = await fetch_twitter_media(url)
+                v = pick_video(data["videos"], quality_height or max_height)
+                dest = out_dir / f"tw_{uuid.uuid4().hex[:8]}.mp4"
+                path = await download_direct(v["url"], dest, DOWNLOAD_HARD_CAP_BYTES)
+                info_holder.update({"webpage_url": url, "acodec": "mp4a", "height": v.get("height") or 0,
+                                    "title": data["title"], "duration": int(v.get("duration") or 0)})
+                return path, info_holder
+            except Exception as e2:
+                raise e2 if "File too large" in str(e2) else e
         if is_auth_wall_error(e) and cobalt_enabled():
             path = await cobalt_download(url, out_dir, height=quality_height, max_bytes=DOWNLOAD_HARD_CAP_BYTES)
             info_holder.update({"webpage_url": url, "acodec": "unknown"})
@@ -678,7 +707,7 @@ def has_audio_track(info: Dict[str, Any]) -> bool:
     return False
 
 
-async def _download_audio_ytdlp(url: str, out_dir: Path) -> Path:
+async def download_audio_only(url: str, out_dir: Path) -> Path:
     """
     Качает только звук через yt-dlp (bestaudio) — так же, как видео, а не
     попыткой переиспользовать сырую CDN-ссылку напрямую. У многих площадок
@@ -719,159 +748,31 @@ async def _download_audio_ytdlp(url: str, out_dir: Path) -> Path:
     try:
         return await asyncio.to_thread(lambda: _run_chains(url, _run))
     except Exception as e:
+        if is_twitter_url(url) and _FFMPEG_PATH:
+            try:
+                data = await fetch_twitter_media(url)
+                v = pick_video(data["videos"], 480)
+                tmp = out_dir / f"tw_{uuid.uuid4().hex[:8]}.mp4"
+                await download_direct(v["url"], tmp, DOWNLOAD_HARD_CAP_BYTES)
+                mp3 = tmp.with_suffix(".audio.mp3")
+
+                def _extract() -> None:
+                    r = subprocess.run([_FFMPEG_PATH, "-y", "-loglevel", "error", "-i", str(tmp), "-vn",
+                                        "-c:a", "libmp3lame", "-b:a", "192k", str(mp3)],
+                                       capture_output=True, timeout=180)
+                    if r.returncode != 0 or not mp3.exists():
+                        raise RuntimeError("ffmpeg: не удалось извлечь звук")
+
+                try:
+                    await asyncio.to_thread(_extract)
+                finally:
+                    tmp.unlink(missing_ok=True)
+                return mp3
+            except Exception:
+                raise e
         if is_auth_wall_error(e) and cobalt_enabled():
             return await cobalt_download(url, out_dir, audio_only=True, max_bytes=DOWNLOAD_HARD_CAP_BYTES)
         raise
-
-
-# ===================== запасные пути (X 18+, Likee) =====================
-# Кэши в памяти: что показал probe, чтобы скачивание шло тем же путём.
-_FALLBACK_INFO: Dict[str, Dict[str, Any]] = {}   # url -> info из запасного источника
-_URL_ALIAS: Dict[str, str] = {}                  # исходная ссылка -> рабочая (Likee)
-
-
-def _cap(d: Dict[str, Any]) -> None:
-    if len(d) > 500:
-        d.clear()
-
-
-def _short(e: BaseException, n: int = 180) -> str:
-    s = (str(e) or e.__class__.__name__).replace("\n", " ")
-    return s if len(s) <= n else s[: n - 3] + "..."
-
-
-def _has_video_formats(info: Dict[str, Any]) -> bool:
-    return any(
-        f.get("vcodec") not in (None, "none") and (f.get("height") or f.get("url"))
-        for f in (info.get("formats") or [])
-    )
-
-
-async def _canonical_url(url: str) -> str:
-    """Для Likee превращает короткую/редиректную ссылку в рабочий likee.video/v/<id>."""
-    if not is_likee_url(url):
-        return url
-    if url in _URL_ALIAS:
-        return _URL_ALIAS[url]
-    cands = await likee_candidates(url)
-    if not cands:
-        raise RuntimeError("Likee: ссылка раскрылась в корень сайта — нет id видео")
-    _URL_ALIAS[url] = cands[0]
-    _cap(_URL_ALIAS)
-    return cands[0]
-
-
-def _fb_dl_info(fb: Dict[str, Any]) -> Dict[str, Any]:
-    d = dict(fb)
-    d.pop("formats", None)
-    return d
-
-
-async def probe_youtube(url: str) -> Dict[str, Any]:
-    """
-    Проба ссылки. yt-dlp — основной путь; для X и Likee при неудаче (или если
-    yt-dlp вернул «пустой» ответ без видеоформатов — так бывает с 18+ в X) —
-    запасной источник (см. platform_fallbacks.py).
-    """
-    orig = url
-    likee_cands: Optional[List[str]] = None
-    urls = [url]
-    if is_likee_url(url):
-        likee_cands = await likee_candidates(url)
-        if not likee_cands:
-            raise RuntimeError("Likee: ссылка раскрылась в корень сайта — нет id видео")
-        urls = likee_cands
-
-    last: Optional[BaseException] = None
-    cobalt_info: Optional[Dict[str, Any]] = None
-    for u in urls:
-        try:
-            info = await _probe_youtube_ytdlp(u)
-            if has_fallback(u):
-                if info.get("_cobalt"):
-                    # yt-dlp упёрся в «войдите» -> для X/Likee сначала пробуем свой запасной источник, cobalt — на крайний случай
-                    cobalt_info = info
-                    raise RuntimeError("yt-dlp: нужен вход в аккаунт (18+/закрытый пост?)")
-                if not _has_video_formats(info):
-                    raise RuntimeError("yt-dlp: нет видеоформатов (18+/закрытый пост?)")
-            if u != orig:
-                _URL_ALIAS[orig] = u
-                _cap(_URL_ALIAS)
-            return info
-        except Exception as e:
-            last = e
-            if not has_fallback(u):
-                raise
-
-    # yt-dlp не справился на всех кандидатах — пробуем запасной источник
-    try:
-        fb = await fallback_info(urls[0], likee_cands)
-    except Exception as e2:
-        if cobalt_info is not None:
-            return cobalt_info
-        raise RuntimeError(f"{_short(last) if last else '?'} | fallback: {_short(e2)}") from e2
-    _FALLBACK_INFO[orig] = fb
-    _FALLBACK_INFO[fb["webpage_url"]] = fb
-    _cap(_FALLBACK_INFO)
-    return fb
-
-
-async def download_youtube(
-    url: str,
-    out_dir: Path,
-    max_height: int = YOUTUBE_MAX_HEIGHT,
-    quality_height: Optional[int] = None,
-) -> Tuple[Path, Dict[str, Any]]:
-    orig = url
-    url = await _canonical_url(url)
-
-    fb = _FALLBACK_INFO.get(orig) or _FALLBACK_INFO.get(url)
-    if fb:  # probe уже показал, что yt-dlp тут бессилен
-        path = await fallback_download(fb, out_dir, max_bytes=DOWNLOAD_HARD_CAP_BYTES)
-        return path, _fb_dl_info(fb)
-
-    try:
-        return await _download_youtube_ytdlp(url, out_dir, max_height=max_height, quality_height=quality_height)
-    except Exception as e:
-        if not has_fallback(url):
-            raise
-        try:
-            fb = await fallback_info(url)
-            _FALLBACK_INFO[orig] = fb
-            _cap(_FALLBACK_INFO)
-            path = await fallback_download(fb, out_dir, max_bytes=DOWNLOAD_HARD_CAP_BYTES)
-            return path, _fb_dl_info(fb)
-        except Exception as e2:
-            raise RuntimeError(f"{_short(e)} | fallback: {_short(e2)}") from e2
-
-
-async def download_audio_only(url: str, out_dir: Path) -> Path:
-    orig = url
-    url = await _canonical_url(url)
-
-    fb = _FALLBACK_INFO.get(orig) or _FALLBACK_INFO.get(url)
-    if not fb:
-        try:
-            return await _download_audio_ytdlp(url, out_dir)
-        except Exception as e:
-            if not has_fallback(url):
-                raise
-            try:
-                fb = await fallback_info(url)
-                _FALLBACK_INFO[orig] = fb
-                _cap(_FALLBACK_INFO)
-            except Exception as e2:
-                raise RuntimeError(f"{_short(e)} | fallback: {_short(e2)}") from e2
-
-    path = await fallback_download(fb, out_dir, max_bytes=DOWNLOAD_HARD_CAP_BYTES)
-    if _FFMPEG_PATH:
-        try:
-            mp3 = await ffmpeg_to_mp3(_FFMPEG_PATH, path)
-            path.unlink(missing_ok=True)
-            return mp3
-        except Exception:
-            pass
-    return path
 
 
 # Эти функции на самом деле не привязаны к YouTube — просто вызывают
