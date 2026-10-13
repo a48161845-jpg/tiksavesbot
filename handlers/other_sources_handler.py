@@ -1,6 +1,6 @@
 """
-Обработчик ссылок на Instagram (Reels/посты), VK (видео/клипы), Pinterest
-(видео-пины), Likee, X (Twitter), Одноклассники и Rutube — через тот же движок, что и YouTube (yt-dlp, см.
+Обработчик ссылок на Instagram (Reels/посты), VK (видео/клипы) и Pinterest
+(видео-пины) — через тот же движок, что и YouTube (yt-dlp, см.
 youtube_provider.py). Регистрируется раньше main_handler.py (см.
 handlers/__init__.py), поэтому такие ссылки перехватываются здесь и не
 долетают до TikTok-хендлера.
@@ -52,7 +52,8 @@ PLATFORM_LABELS = {
     "likee": ("💗", "Likee"),
     "twitter": ("🐦", "X (Twitter)"),
     "ok": ("🟠", "Одноклассники"),
-    "rutube": ("🟣", "Rutube"),
+    "rutube": ("📺", "Rutube"),
+    "reddit": ("👽", "Reddit"),
 }
 
 
@@ -99,9 +100,10 @@ async def other_sources_handler(message: Message):
 
     store.register(uid)
 
-    # Likee-ссылки (в т.ч. короткие l.likee.video/v/…) раскрываются внутри probe_media/download_media —
-    # раньше тут редирект превращал ссылку в корень сайта (likee.video) -> "Unsupported URL".
     url = extract_other_source_url(text) or text
+    if platform == "likee":
+        from likee_resolver import resolve_likee
+        url = await resolve_likee(url)
 
     ok_dl, wait_dl = lim.dl_hit(uid)
     if not ok_dl:

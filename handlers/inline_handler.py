@@ -114,6 +114,9 @@ async def _resolve_and_download(platform: str, url: str, out_dir: Path) -> Path:
         )
         return tmp_path
 
+    if platform == "likee":
+        from likee_resolver import resolve_likee
+        url = await resolve_likee(url)
     info = await probe_media(url)
     duration = int(info.get("duration") or 0)
     if duration and duration > YOUTUBE_MAX_DURATION_SEC:
@@ -210,10 +213,10 @@ async def inline_handler(inline_query: InlineQuery):
     if not query:
         hint = InlineQueryResultArticle(
             id="hint",
-            title=tr(uid, "Вставь ссылку на TikTok / YouTube / Instagram / VK / Pinterest / Likee / X / OK / Rutube"),
+            title=tr(uid, "Вставь ссылку на TikTok / YouTube / Instagram / VK / Pinterest / Likee / X / OK / Rutube / Reddit"),
             description=tr(uid, "Начни печатать — бот покажет результат прямо тут"),
             input_message_content=InputTextMessageContent(
-                message_text=tr(uid, "📎 Пришли мне ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X, OK или Rutube — скачаю видео.")
+                message_text=tr(uid, "📎 Пришли мне ссылку на TikTok, YouTube, Instagram, VK, Pinterest, Likee, X, OK, Rutube или Reddit — скачаю видео.")
             ),
         )
         await inline_query.answer([hint], cache_time=1, is_personal=True)
@@ -224,7 +227,7 @@ async def inline_handler(inline_query: InlineQuery):
         not_found = InlineQueryResultArticle(
             id="notfound",
             title=tr(uid, "Ссылка не распознана"),
-            description=tr(uid, "Поддерживаются TikTok, YouTube, Instagram, VK, Pinterest, Likee, X, OK, Rutube"),
+            description=tr(uid, "Поддерживаются TikTok, YouTube, Instagram, VK, Pinterest, Likee, X, OK, Rutube, Reddit"),
             input_message_content=InputTextMessageContent(message_text=tr(uid, "❌ Не нашёл поддерживаемую ссылку в запросе.")),
         )
         await inline_query.answer([not_found], cache_time=1, is_personal=True)
