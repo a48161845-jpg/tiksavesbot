@@ -241,7 +241,6 @@ async def twitter_fx_info(url: str) -> Dict[str, Any]:
 # Что понимает yt-dlp: likee.video/v/<id> и likee.video/@user/video/<id>
 _LIKEE_OK_RE = re.compile(r"https?://(?:www\.)?likee\.video/(?:v/\w+|[^/\s?#]+/video/\w+)", re.I)
 _LIKEE_SHORT_ID_RE = re.compile(r"l\.likee\.(?:video|com)/v/(\w+)", re.I)
-_LIKEE_ANY_RE = re.compile(r"https?://(?:www\.)?likee\.video/(?:v/\w+|[^/\s\"'<>?#]+/video/\w+)[^\s\"'<>]*", re.I)
 
 
 def _norm_likee(u: str) -> str:
@@ -251,25 +250,42 @@ def _norm_likee(u: str) -> str:
     return u
 
 
-async def likee_candidates(url: str) -> List[str]:
-    """Список URL, которые стоит скормить yt-dlp (по убыванию надёжности). Корень сайта никогда не попадает."""
+# Официальный аккаунт Likee: страницы-заглушки/промо часто ведут именно на него — это не «то самое» видео.
+_LIKEE_PROMO_PATH = re.compile(r"likee\.video/@likee/video/", re.I)
+
+
+async def _likee_resolve(url: str) -> "tuple[List[str], List[str]]":
+    """
+    Возвращает (кандидаты, цепочка_редиректов).
+    Кандидаты — ТОЛЬКО из того, что реально отдал сервер заголовком Location, плюс
+    https://likee.video/v/<код> из самой короткой ссылки. Ничего не берётся из тела страницы
+    (раньше оттуда подбиралась первая попавшаяся ссылка likee.video — и бот качал чужое видео).
+    """
     url = _norm_likee(url)
     cands: List[str] = []
+    hops: List[str] = []
 
-    def add(u: Optional[str]) -> None:
+    def add(u: Optional[str], *, from_redirect: bool = False) -> None:
         if not u:
             return
         u = _norm_likee(u)
-        if _LIKEE_OK_RE.match(u) and u not in cands:
-            cands.append(u)
+        if not _LIKEE_OK_RE.match(u) or u in cands:
+            return
+        if from_redirect and _LIKEE_PROMO_PATH.search(u) and not _LIKEE_PROMO_PATH.search(url):
+            return  # редирект на промо-видео официального аккаунта — игнорируем
+        cands.append(u)
 
     host = (urlparse(url).hostname or "").lower()
-    if host != "l.likee.video" and host != "l.likee.com":
-        add(url)  # уже нормальная ссылка
+    is_short = host in ("l.likee.video", "l.likee.com")
+    if not is_short:
+        add(url)  # нормальная ссылка пользователя — главный кандидат как есть, со всеми параметрами
 
-    # Ручное следование редиректам (мобильный UA), чтобы не потерять путь.
+    m = _LIKEE_SHORT_ID_RE.search(url)
+    if m:
+        # у yt-dlp id из likee.video/v/<код> — тот же короткий код
+        add(f"https://likee.video/v/{m.group(1)}")
+
     timeout = aiohttp.ClientTimeout(total=12)
-    body = ""
     try:
         async with aiohttp.ClientSession(timeout=timeout) as s:
             cur = url
@@ -279,33 +295,19 @@ async def likee_candidates(url: str) -> List[str]:
                     loc = r.headers.get("Location")
                     if r.status in (301, 302, 303, 307, 308) and loc:
                         cur = urljoin(cur, loc)
-                        add(cur)
+                        hops.append(f"{r.status}->{cur[:120]}")
+                        add(cur, from_redirect=True)
                         continue
-                    add(str(r.url))
-                    with contextlib.suppress(Exception):
-                        body = (await r.content.read(300_000)).decode("utf-8", "ignore")
+                    hops.append(f"{r.status}")
                     break
-    except Exception:
-        pass
+    except Exception as e:
+        hops.append(type(e).__name__)
+    return cands, hops
 
-    if body:
-        for pat in (
-            r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)',
-            r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)',
-            r'http-equiv=["\']refresh["\'][^>]+url=([^"\'>\s]+)',
-            r'location\.(?:href|replace)\s*[=(]\s*["\']([^"\']+)',
-        ):
-            m = re.search(pat, body, re.I)
-            if m:
-                add(urljoin(url, m.group(1)))
-        m = _LIKEE_ANY_RE.search(body)
-        if m:
-            add(m.group(0))
 
-    # Последняя надежда: id из короткой ссылки как есть.
-    m = _LIKEE_SHORT_ID_RE.search(url)
-    if m:
-        add(f"https://likee.video/v/{m.group(1)}")
+async def likee_candidates(url: str) -> List[str]:
+    """Список URL, которые стоит скормить yt-dlp (по убыванию надёжности). Корень сайта никогда не попадает."""
+    cands, _ = await _likee_resolve(url)
     return cands
 
 
@@ -390,7 +392,10 @@ async def _likee_api_info(session: "aiohttp.ClientSession", post_id: str) -> Opt
     return None
 
 
-def _likee_pick_from_html(html: str) -> Optional[Dict[str, Any]]:
+def _likee_pick_from_html(html: str, want_id: str = "") -> Optional[Dict[str, Any]]:
+    """Видео со страницы — только если страница действительно про это видео (в ней встречается его id)."""
+    if want_id and want_id not in html:
+        return None
     blobs: List[Any] = []
     m = re.search(r"window\.data\s*=\s*({.+?});\s*(?:</script>|window\.|$)", html, re.S)
     if m:
@@ -410,23 +415,21 @@ def _likee_pick_from_html(html: str) -> Optional[Dict[str, Any]]:
     mv = re.search(r'<meta[^>]+property=["\']og:video(?::url|:secure_url)?["\'][^>]+content=["\']([^"\']+)', html, re.I)
     if mv:
         return {"url": _unescape_url(mv.group(1)), "width": 0, "height": 0, "duration": 0, "title": ""}
-    # последняя надежда: любой .mp4 в тексте страницы (кроме явных превью)
-    for u in re.findall(r'https?:?\\?/\\?/[^"\'\s<>]+?\.mp4[^"\'\s<>]*', html):
-        u = _unescape_url(u)
-        if not any(b in u.lower() for b in ("cover", "thumb", "preview")):
-            return {"url": u, "width": 0, "height": 0, "duration": 0, "title": ""}
     return None
 
 
 async def likee_page_info(url: str, cands: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Best effort, без yt-dlp:
-      1) по числовому postId (из /video/<id> или ?postId=) — API сайта Likee;
-      2) разбор HTML страницы (window.data / JSON-блоки / og:video / любой .mp4).
+      1) по числовому postId (из /video/<id> или ?postId= в НАСТОЯЩЕЙ ссылке/редиректе) — API сайта Likee;
+      2) разбор HTML страницы кандидата (только если в ней встречается id этого видео).
+    Если уверенности нет — честная ошибка с диагностикой, а не чужое видео.
     """
-    cands = cands or await likee_candidates(url)
+    hops: List[str] = []
     if not cands:
-        raise RuntimeError("Likee: не удалось понять ссылку (после раскрытия — корень сайта)")
+        cands, hops = await _likee_resolve(url)
+    if not cands:
+        raise RuntimeError("Likee: не удалось понять ссылку (редиректы: " + (" | ".join(hops) or "нет") + ")")
     errors: List[str] = []
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as s:
@@ -438,24 +441,32 @@ async def likee_page_info(url: str, cands: Optional[List[str]] = None) -> Dict[s
                                   source="likee-api")
             errors.append(f"api[{pid}]: нет данных")
         for cand in cands:
+            want = (re.search(r"/(?:v|video)/(\w+)", cand) or [None, ""])[1]
             try:
                 async with s.get(cand, headers={"User-Agent": _UA_DESKTOP, "Accept": "text/html,*/*"}) as r:
                     if r.status >= 400:
-                        errors.append(f"page: HTTP {r.status}")
+                        errors.append(f"page {want}: HTTP {r.status}")
                         continue
                     html = await r.text(errors="ignore")
             except Exception as e:
-                errors.append(f"page: {type(e).__name__}")
+                errors.append(f"page {want}: {type(e).__name__}")
                 continue
-            pick = _likee_pick_from_html(html)
+            pick = _likee_pick_from_html(html, want)
             if not pick:
-                errors.append("page: нет ссылки на видео (закрыт/удалён или Likee поменял вёрстку)")
+                title = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+                errors.append(
+                    f"page {want}: нет видео (len={len(html)}, id_in_page={want in html}, "
+                    f"title={(title.group(1).strip()[:40] if title else '-')!r})"
+                )
                 continue
-            vid = (re.search(r"/(?:v|video)/(\w+)", cand) or [None, uuid.uuid4().hex[:8]])[1]
+            vid = want or uuid.uuid4().hex[:8]
             return _make_info(vid=vid, url=cand, media_url=pick["url"], title=pick["title"],
                               duration=pick["duration"], width=pick["width"], height=pick["height"],
                               source="likee-page")
-    raise RuntimeError("Likee fallback не сработал: " + "; ".join(errors[-3:] or ["нет ответа"]))
+    msg = "Likee fallback не сработал: " + "; ".join(errors[-3:] or ["нет ответа"])
+    if hops:
+        msg += " | redirects: " + " | ".join(hops[:4])
+    raise RuntimeError(msg)
 
 
 # ------------------------------------------------------------- Одноклассники (клипы)
