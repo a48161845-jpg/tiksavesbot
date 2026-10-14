@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, List
 import aiohttp
 from datetime import datetime, timezone, timedelta
 
-from config import MSK_TZ, TIKTOK_RE, TIKTOK_SHORT_RE, YOUTUBE_RE, INSTAGRAM_RE, VK_RE, PINTEREST_RE, LIKEE_RE, TWITTER_RE, OK_RE, RUTUBE_RE, REDDIT_RE, ADMINS
+from config import MSK_TZ, TIKTOK_RE, TIKTOK_SHORT_RE, YOUTUBE_RE, INSTAGRAM_RE, VK_RE, PINTEREST_RE, TWITTER_RE, RUTUBE_RE, REDDIT_RE, ADMINS
 
 # ================== HTML FORMATTING ==================
 def html_escape(s: str) -> str:
@@ -247,14 +247,10 @@ def is_vk(text: str) -> bool:
 def is_pinterest(text: str) -> bool:
     return bool(PINTEREST_RE.search(text or ""))
 
-def is_likee(text: str) -> bool:
-    return bool(LIKEE_RE.search(text or ""))
 
 def is_twitter(text: str) -> bool:
     return bool(TWITTER_RE.search(text or ""))
 
-def is_ok(text: str) -> bool:
-    return bool(OK_RE.search(text or ""))
 
 def is_rutube(text: str) -> bool:
     return bool(RUTUBE_RE.search(text or ""))
@@ -264,9 +260,7 @@ _OTHER_PLATFORMS = (
     ("instagram", INSTAGRAM_RE),
     ("vk", VK_RE),
     ("pinterest", PINTEREST_RE),
-    ("likee", LIKEE_RE),
     ("twitter", TWITTER_RE),
-    ("ok", OK_RE),
     ("rutube", RUTUBE_RE),
     ("reddit", REDDIT_RE),
 )
@@ -279,27 +273,12 @@ def detect_other_platform(text: str) -> Optional[str]:
     return None
 
 def is_other_source(text: str) -> bool:
-    """Instagram / VK / Pinterest / Likee / X / OK / Rutube / Reddit — всё, что идёт через тот же движок, что и YouTube."""
+    """Instagram / VK / Pinterest / X / Rutube / Reddit — всё, что идёт через тот же движок, что и YouTube."""
     return detect_other_platform(text) is not None
 
 _TW_MIRRORS_RE = re.compile(r"://(?:www\.|mobile\.|m\.)?(?:fxtwitter|vxtwitter|fixupx)\.com/", re.I)
 
-_OK_ID_RES = (
-    re.compile(r"[?&]clip_id=(\d+)", re.I),  # ok.ru/clip?owner_id=-123&clip_id=456 (клипы)
-    re.compile(r"/(?:video|videoembed|live|movie|movies|clips?)/(\d+)", re.I),
-    re.compile(r"/moviePlayer/(\d+)", re.I),
-    re.compile(r"[?&]st\.mvId=(\d+)", re.I),
-)
 _RUTUBE_ID_RE = re.compile(r"rutube\.ru/(video/private|video|play/embed|embed|shorts)/([0-9a-f]{32})", re.I)
-
-def _norm_ok(url: str) -> str:
-    """Любую ссылку OK на видео -> https://ok.ru/video/ID (так её понимает yt-dlp)."""
-    for rx in _OK_ID_RES:
-        m = rx.search(url)
-        if m:
-            kind = "live" if re.search(r"/live/\d+", url, re.I) else "video"
-            return f"https://ok.ru/{kind}/{m.group(1)}"
-    return url
 
 def _norm_rutube(url: str) -> str:
     """shorts/embed -> обычная страница видео; private сохраняем вместе с ключом ?p=…"""
@@ -315,8 +294,6 @@ def _norm_rutube(url: str) -> str:
 def _fix_other_url(url: str) -> str:
     # зеркала X (fxtwitter и т.п.) yt-dlp не знает — возвращаем настоящий домен
     url = _TW_MIRRORS_RE.sub("://twitter.com/", url)
-    if OK_RE.search(url):
-        return _norm_ok(url)
     if RUTUBE_RE.search(url):
         return _norm_rutube(url)
     return url
@@ -410,7 +387,7 @@ def _empty_period_bucket() -> dict:
 
 
 async def resolve_generic_redirect(url: str, timeout: float = 10.0) -> str:
-    """Раскрывает короткую ссылку (например l.likee.video/v/...) — возвращает финальный URL или исходный."""
+    """Раскрывает короткую ссылку — возвращает финальный URL или исходный."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(

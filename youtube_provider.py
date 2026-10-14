@@ -42,7 +42,7 @@ except ImportError:  # файл не залит в репозиторий — п
 
 
 from platform_fallbacks import (
-    has_fallback, is_likee_url, likee_candidates, fallback_info, fallback_download, ffmpeg_to_mp3,
+    has_fallback, fallback_info, fallback_download, ffmpeg_to_mp3,
 )
 
 
@@ -724,10 +724,9 @@ async def _download_audio_ytdlp(url: str, out_dir: Path) -> Path:
         raise
 
 
-# ===================== запасные пути (X 18+, Likee) =====================
+# ===================== запасные пути (X 18+, Reddit) =====================
 # Кэши в памяти: что показал probe, чтобы скачивание шло тем же путём.
 _FALLBACK_INFO: Dict[str, Dict[str, Any]] = {}   # url -> info из запасного источника
-_URL_ALIAS: Dict[str, str] = {}                  # исходная ссылка -> рабочая (Likee)
 
 
 def _cap(d: Dict[str, Any]) -> None:
@@ -747,20 +746,6 @@ def _has_video_formats(info: Dict[str, Any]) -> bool:
     )
 
 
-async def _canonical_url(url: str) -> str:
-    """Для Likee превращает короткую/редиректную ссылку в рабочий likee.video/v/<id>."""
-    if not is_likee_url(url):
-        return url
-    if url in _URL_ALIAS:
-        return _URL_ALIAS[url]
-    cands = await likee_candidates(url)
-    if not cands:
-        raise RuntimeError("Likee: ссылка раскрылась в корень сайта — нет id видео")
-    _URL_ALIAS[url] = cands[0]
-    _cap(_URL_ALIAS)
-    return cands[0]
-
-
 def _fb_dl_info(fb: Dict[str, Any]) -> Dict[str, Any]:
     d = dict(fb)
     d.pop("formats", None)
@@ -769,48 +754,34 @@ def _fb_dl_info(fb: Dict[str, Any]) -> Dict[str, Any]:
 
 async def probe_youtube(url: str) -> Dict[str, Any]:
     """
-    Проба ссылки. yt-dlp — основной путь; для X и Likee при неудаче (или если
+    Проба ссылки. yt-dlp — основной путь; для X и Reddit при неудаче (или если
     yt-dlp вернул «пустой» ответ без видеоформатов — так бывает с 18+ в X) —
     запасной источник (см. platform_fallbacks.py).
     """
-    orig = url
-    likee_cands: Optional[List[str]] = None
-    urls = [url]
-    if is_likee_url(url):
-        likee_cands = await likee_candidates(url)
-        if not likee_cands:
-            raise RuntimeError("Likee: ссылка раскрылась в корень сайта — нет id видео")
-        urls = likee_cands
-
-    last: Optional[BaseException] = None
-    cobalt_info: Optional[Dict[str, Any]] = None
-    for u in urls:
-        try:
-            info = await _probe_youtube_ytdlp(u)
-            if has_fallback(u):
-                if info.get("_cobalt"):
-                    # yt-dlp упёрся в «войдите» -> для X/Likee сначала пробуем свой запасной источник, cobalt — на крайний случай
-                    cobalt_info = info
-                    raise RuntimeError("yt-dlp: нужен вход в аккаунт (18+/закрытый пост?)")
-                if not _has_video_formats(info):
-                    raise RuntimeError("yt-dlp: нет видеоформатов (18+/закрытый пост?)")
-            if u != orig:
-                _URL_ALIAS[orig] = u
-                _cap(_URL_ALIAS)
-            return info
-        except Exception as e:
-            last = e
-            if not has_fallback(u):
-                raise
-
-    # yt-dlp не справился на всех кандидатах — пробуем запасной источник
     try:
-        fb = await fallback_info(urls[0], likee_cands)
-    except Exception as e2:
-        if cobalt_info is not None:
-            return cobalt_info
-        raise RuntimeError(f"{_short(last) if last else '?'} | fallback: {_short(e2)}") from e2
-    _FALLBACK_INFO[orig] = fb
+        info = await _probe_youtube_ytdlp(url)
+        if has_fallback(url):
+            if info.get("_cobalt"):
+                # yt-dlp упёрся в «войдите» -> сначала свой запасной источник, cobalt — на крайний случай
+                try:
+                    return await _fallback_probe(url)
+                except Exception:
+                    return info
+            if not _has_video_formats(info):
+                raise RuntimeError("yt-dlp: нет видеоформатов (18+/закрытый пост?)")
+        return info
+    except Exception as e:
+        if not has_fallback(url):
+            raise
+        try:
+            return await _fallback_probe(url)
+        except Exception as e2:
+            raise RuntimeError(f"{_short(e)} | fallback: {_short(e2)}") from e2
+
+
+async def _fallback_probe(url: str) -> Dict[str, Any]:
+    fb = await fallback_info(url)
+    _FALLBACK_INFO[url] = fb
     _FALLBACK_INFO[fb["webpage_url"]] = fb
     _cap(_FALLBACK_INFO)
     return fb
@@ -823,7 +794,6 @@ async def download_youtube(
     quality_height: Optional[int] = None,
 ) -> Tuple[Path, Dict[str, Any]]:
     orig = url
-    url = await _canonical_url(url)
 
     fb = _FALLBACK_INFO.get(orig) or _FALLBACK_INFO.get(url)
     if fb:  # probe уже показал, что yt-dlp тут бессилен
@@ -847,7 +817,6 @@ async def download_youtube(
 
 async def download_audio_only(url: str, out_dir: Path) -> Path:
     orig = url
-    url = await _canonical_url(url)
 
     fb = _FALLBACK_INFO.get(orig) or _FALLBACK_INFO.get(url)
     if not fb:
