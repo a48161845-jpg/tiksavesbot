@@ -114,9 +114,6 @@ async def _resolve_and_download(platform: str, url: str, out_dir: Path) -> Path:
         )
         return tmp_path
 
-    if platform == "likee":
-        from likee_resolver import resolve_likee
-        url = await resolve_likee(url)
     info = await probe_media(url)
     duration = int(info.get("duration") or 0)
     if duration and duration > YOUTUBE_MAX_DURATION_SEC:
@@ -189,7 +186,7 @@ async def _download_and_cache(platform: str, url: str, uid: int) -> str:
 
         label = await resolve_user_label(bot, uid)
         store.set_user_label(uid, label)
-        store.inc_download(uid, "video", items=1, source=platform)
+        store.inc_download(uid, "video", items=1, source=platform, url=url)
         with contextlib.suppress(Exception):
             await after_download_hooks(bot, uid, label)
 

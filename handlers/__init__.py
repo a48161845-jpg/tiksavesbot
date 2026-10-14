@@ -11,6 +11,7 @@
 обработать его раньше catch-all.
 """
 from . import commands
+from . import history_command
 from . import admin_commands
 from . import admin_callbacks
 from . import donate_callbacks

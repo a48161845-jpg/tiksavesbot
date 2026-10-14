@@ -86,7 +86,7 @@ async def video_choice_cb(call: CallbackQuery):
                 tr(uid, CAPTION_VIDEO),
                 reply_markup=under_video_kb(has_music=has_music, req_id=req_id, lang=get_lang(uid)),
             )
-            store.inc_download(uid, "video", items=1, source="tiktok")
+            store.inc_download(uid, "video", items=1, source="tiktok", url=str(st.get("src") or ""))
             await log_event(
                 call.bot,
                 "videodl",

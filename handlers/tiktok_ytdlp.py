@@ -212,6 +212,7 @@ async def tiktok_ytdlp_handler(message: Message):
                 "video",
                 items=1,
                 source="tiktok",
+                url=url,
             )
 
             await after_download_hooks(

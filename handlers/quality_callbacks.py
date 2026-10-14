@@ -123,7 +123,7 @@ async def quality_choice_callback(call: CallbackQuery):
                         await status.edit_text(tr(uid, "❌ Не удалось отправить звук."))
                     return
 
-                store.inc_audio(uid, 1)
+                store.inc_audio(uid, 1, url=url, source=platform)
                 with contextlib.suppress(Exception):
                     await status.delete()
                 return

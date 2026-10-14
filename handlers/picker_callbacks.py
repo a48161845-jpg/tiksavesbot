@@ -91,7 +91,7 @@ async def _send_photos_as_video(call: CallbackQuery, st: dict, uid: int, label: 
             )
         finally:
             cleanup_video_kwargs(meta)
-        store.inc_download(uid, "video", items=1, source="tiktok")
+        store.inc_download(uid, "video", items=1, source="tiktok", url=str(st.get("src") or ""))
         await after_download_hooks(call.bot, uid, label)
     except Exception as e:
         with contextlib.suppress(Exception):
@@ -305,7 +305,7 @@ async def picker_cb(call: CallbackQuery):
 
         await call.answer(tr(uid, "Отправляю всё…"))
         cnt = await send_photos(call.message, photos_all, caption_html=tr(uid, CAPTION_PHOTO), live=st.get("live"))
-        store.inc_download(uid, "photo", items=cnt, source="tiktok")
+        store.inc_download(uid, "photo", items=cnt, source="tiktok", url=src)
 
         if want_music and globals_state.g_provider:
             await send_music_if_any(call.message, globals_state.g_provider, st.get("music"), uid=uid, label=label, src=src)
@@ -356,7 +356,7 @@ async def picker_cb(call: CallbackQuery):
         cnt = 0
         if chosen:
             cnt = await send_photos(call.message, chosen, caption_html=tr(uid, CAPTION_PHOTO), live=st.get("live"))
-            store.inc_download(uid, "photo", items=cnt, source="tiktok")
+            store.inc_download(uid, "photo", items=cnt, source="tiktok", url=src)
 
         if want_music and globals_state.g_provider:
             await send_music_if_any(call.message, globals_state.g_provider, st.get("music"), uid=uid, label=label, src=src)

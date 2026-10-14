@@ -103,7 +103,7 @@ async def _tiktok_ytdlp_fallback(message: Message, uid: int, label: str, url: st
         finally:
             cleanup_video_kwargs(meta)
 
-        store.inc_download(uid, "video", items=1, source="tiktok_ytdlp_fallback")
+        store.inc_download(uid, "video", items=1, source="tiktok_ytdlp_fallback", url=url)
         await after_download_hooks(message.bot, uid, label)
         with contextlib.suppress(Exception):
             await status.delete()
@@ -262,7 +262,7 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
                 status_msg=status,
                 reply_markup=under_video_kb(has_music=bool(music), has_description=bool(description), req_id=req_id, lang=get_lang(uid)),
             )
-            store.inc_download(uid, "video", items=1, source="tiktok")
+            store.inc_download(uid, "video", items=1, source="tiktok", url=url or text)
             await after_download_hooks(message.bot, uid, label)
             with contextlib.suppress(Exception):
                 await status.delete()
