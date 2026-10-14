@@ -1,14 +1,12 @@
 """
-/history — история скачиваний файлом.
+/history — история скачиваний файлом. ТОЛЬКО ДЛЯ АДМИНОВ (обычным пользователям бот не отвечает,
+как и на остальные админ-команды; описание — в админ-справке, keyboards.ADMIN_HELP_TEXT).
 
-Для всех (своя история):
-  /history          — текстовый файл (.txt), новые записи сверху
-  /history csv      — таблица (.csv, UTF-8 с BOM — открывается в Excel)
-
-Только для админов:
-  /history 123456789      или  /history @username   — история конкретного человека
-  /history all            — последние скачивания ВСЕХ пользователей (до HISTORY_ALL_LIMIT строк)
-  к любому варианту можно добавить csv:  /history all csv
+  /history                 — своя история (.txt, новые записи сверху)
+  /history 123456789       или  /history @username   — история конкретного человека
+  /history all             — последние скачивания ВСЕХ пользователей (до HISTORY_ALL_LIMIT строк)
+  к любому варианту можно добавить csv (таблица .csv, UTF-8 с BOM — открывается в Excel):
+  /history all csv
 
 Данные берутся из store.get_history(uid): туда пишут inc_download/inc_audio
 (см. storage.py). Хранятся последние HISTORY_MAX_PER_USER записей на человека
@@ -166,14 +164,15 @@ async def history_cmd(message: Message, command: CommandObject):
         label = await resolve_user_label(message.bot, uid)
         store.set_user_label(uid, label)
 
+        if not is_admin(uid):  # не админ — молча игнорируем, как остальные админ-команды
+            return
         if not await gate_message(message, label):
             return
-        store.register(uid)
 
         tokens = (command.args or "").split()
         as_csv = any(t.lower() == "csv" for t in tokens)
         rest = [t for t in tokens if t.lower() != "csv"]
-        admin = is_admin(uid)
+        admin = True
         stamp = datetime.now(MSK_TZ).strftime("%Y%m%d")
         ext = "csv" if as_csv else "txt"
 
