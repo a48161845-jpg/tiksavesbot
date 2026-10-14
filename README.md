@@ -73,10 +73,13 @@ tiksaves_bot/
 
 **Площадки.** Добавлены Rutube (`rutube.ru/video/<id>`, `/shorts/`, `/play/embed/`, приватные `video/private/<id>/?p=…`) и Reddit (`reddit.com/r/…/comments/…`, короткие `/s/…`, `redd.it`, `v.redd.it`); они есть в статистике и во всех текстах на 6 языках. Likee и Одноклассники из скачивания убраны: ссылки на них не распознаются, из текстов и справки они удалены. В статистике метки `likee`/`ok` оставлены, чтобы не терять старые счётчики.
 
+**Логи.** Предупреждение `yt_dlp_outdated` («yt-dlp мог отдать урезанные качества») теперь приходит только для YouTube: у Pinterest/VK/Instagram низкое качество — норма, это была ложная тревога.
+
 **Запасные пути, когда yt-dlp не справился** (модуль `platform_fallbacks.py`, переключение в `youtube_provider.py`: `probe_youtube`, `download_youtube`, `download_audio_only`):
 
 - **X (Twitter) 18+** — через `api.fxtwitter.com` → `api.vxtwitter.com` (прямой mp4 с video.twimg.com), без cookies; звук достаётся ffmpeg-ом. Хосты: `TWITTER_FX_API_HOSTS`.
 - **Reddit** («Account authentication is required» на IP дата-центров) — раскрытие короткой ссылки → JSON поста → DASH-видео + аудио v.redd.it, склейка ffmpeg (без ffmpeg придёт видео без звука) → зеркала `vxreddit.com`/`rxddit.com`. Хосты: `REDDIT_JSON_HOSTS`, `REDDIT_MIRRORS`. Видео не на v.redd.it и галереи так не скачиваются; для закрытых/NSFW-сабреддитов нужны cookies `reddit.com`. Если Reddit режет IP целиком — `COBALT_API_URL` или `YTDLP_PROXY` с домашним IP.
+- **Pinterest** (`No video formats found!` на видео-пинах) — раскрытие `pin.it` → внутренний API пина → JSON страницы (только блок этого пина) → `og:video`; берётся лучший mp4, если есть только HLS — качается через ffmpeg. Пин-картинка даёт честную ошибку «в пине нет видео», а не чужое видео.
 - Когда не сработали оба пути, в лог уходит причина обоих: `yt-dlp … | fallback: …`.
 
 ## /history — только для админов

@@ -7,6 +7,12 @@ X (Twitter), 18+ контент
     они отдают прямые ссылки на mp4 с video.twimg.com. Свои хосты можно задать
     через TWITTER_FX_API_HOSTS (через запятую).
 
+Pinterest
+    yt-dlp иногда отвечает "No video formats found!" на обычные видео-пины. Обход:
+    раскрываем pin.it, берём id пина и читаем video_list — из внутреннего API пина,
+    затем из JSON страницы (ТОЛЬКО блок этого пина) и og:video. Выбирается лучший mp4;
+    если есть только HLS — качаем через ffmpeg. Пин-картинка -> честная ошибка «нет видео».
+
 Reddit
     С IP дата-центров Reddit отвечает yt-dlp "Account authentication is required".
     Обход без cookies: 1) раскрываем короткую ссылку (/s/…, redd.it) и берём id поста;
@@ -55,8 +61,12 @@ def is_reddit_url(url: str) -> bool:
     return bool(re.search(r"(?:^|//|\.)(?:reddit\.com|redd\.it)/", url or "", re.I))
 
 
+def is_pinterest_url(url: str) -> bool:
+    return bool(re.search(r"(?:^|//|\.)(?:pinterest\.[a-z.]+|pin\.it)/", url or "", re.I))
+
+
 def has_fallback(url: str) -> bool:
-    return is_twitter_url(url) or is_reddit_url(url)
+    return is_twitter_url(url) or is_reddit_url(url) or is_pinterest_url(url)
 
 
 def _height_from_url(u: str) -> int:
@@ -354,12 +364,204 @@ async def reddit_info(url: str) -> Dict[str, Any]:
 def _short_err(e: BaseException) -> str:
     return (str(e) or type(e).__name__).replace("\n", " ")[:80]
 
+
+# --------------------------------------------------------------------- Pinterest
+def _pin_id(url: str) -> Optional[str]:
+    m = re.search(r"/pin/(?:[^/?#]*--)?(\d{6,})", url or "")
+    return m.group(1) if m else None
+
+
+def _find_key(obj: Any, key: str) -> Optional[Any]:
+    """Первый словарь/значение по ключу key в произвольно вложенном JSON."""
+    if isinstance(obj, dict):
+        if key in obj and isinstance(obj[key], (dict, list)):
+            return obj[key]
+        for v in obj.values():
+            r = _find_key(v, key)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _find_key(v, key)
+            if r is not None:
+                return r
+    return None
+
+
+def _collect_video_lists(obj: Any, out: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    if out is None:
+        out = []
+    if isinstance(obj, dict):
+        vl = obj.get("video_list")
+        if isinstance(vl, dict):
+            out.append(vl)
+        for v in obj.values():
+            _collect_video_lists(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _collect_video_lists(v, out)
+    return out
+
+
+def _pin_pick_from_lists(lists: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    mp4: List[Dict[str, Any]] = []
+    hls: List[Dict[str, Any]] = []
+    for vl in lists:
+        for name, v in vl.items():
+            if not isinstance(v, dict) or not v.get("url"):
+                continue
+            u = str(v["url"])
+            item = {"url": u, "w": int(v.get("width") or 0), "h": int(v.get("height") or 0),
+                    "d": int((v.get("duration") or 0) / 1000) if (v.get("duration") or 0) > 1000 else int(v.get("duration") or 0)}
+            base = u.split("?")[0].lower()
+            if base.endswith(".mp4"):
+                mp4.append(item)
+            elif base.endswith(".m3u8"):
+                hls.append(item)
+    if mp4:
+        best = max(mp4, key=lambda x: (x["h"], x["w"]))
+        best["hls"] = False
+        return best
+    if hls:
+        best = max(hls, key=lambda x: (x["h"], x["w"]))
+        best["hls"] = True
+        return best
+    return None
+
+
+async def pinterest_info(url: str) -> Dict[str, Any]:
+    errors: List[str] = []
+    timeout = aiohttp.ClientTimeout(total=20)
+    hdrs_html = {"User-Agent": _UA_DESKTOP, "Accept": "text/html,*/*", "Accept-Language": "en-US,en;q=0.9"}
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        # 1) id пина (pin.it -> редирект на /pin/<id>/)
+        pid = _pin_id(url)
+        cur = url if url.startswith("http") else "https://" + url
+        for _ in range(6):
+            if pid:
+                break
+            try:
+                async with s.get(cur, allow_redirects=False, headers=hdrs_html) as r:
+                    loc = r.headers.get("Location")
+                    if r.status in (301, 302, 303, 307, 308) and loc:
+                        cur = urljoin(cur, loc)
+                        pid = _pin_id(cur)
+                        continue
+                    break
+            except Exception as e:
+                errors.append(f"resolve: {_short_err(e)}")
+                break
+        if not pid:
+            raise RuntimeError("Pinterest: не нашёл id пина в ссылке" + (f" ({'; '.join(errors)})" if errors else ""))
+
+        title = ""
+        pick: Optional[Dict[str, Any]] = None
+
+        # 2) внутренний API пина (данные именно этого pid)
+        data = json.dumps({"options": {"id": pid, "field_set_key": "unauth_react_main_pin", "noCache": True,
+                                       "fetch_visual_search_objects": False}, "context": {}},
+                          separators=(",", ":"))
+        from urllib.parse import quote
+        api = (f"https://www.pinterest.com/resource/PinResource/get/?source_url={quote(f'/pin/{pid}/', safe='')}"
+               f"&data={quote(data, safe='')}")
+        try:
+            async with s.get(api, headers={"User-Agent": _UA_DESKTOP, "Accept": "application/json",
+                                           "X-Requested-With": "XMLHttpRequest",
+                                           "X-Pinterest-AppState": "active",
+                                           "Referer": f"https://www.pinterest.com/pin/{pid}/"}) as r:
+                if r.status >= 400:
+                    errors.append(f"api: HTTP {r.status}")
+                else:
+                    js = await r.json(content_type=None)
+                    pdata = (js.get("resource_response") or {}).get("data") if isinstance(js, dict) else None
+                    if isinstance(pdata, dict):
+                        title = str(pdata.get("title") or pdata.get("grid_title") or pdata.get("description") or "")
+                        pick = _pin_pick_from_lists(_collect_video_lists(pdata))
+                        if not pick:
+                            errors.append("api: в данных пина нет video_list")
+                    else:
+                        errors.append("api: пустой ответ")
+        except Exception as e:
+            errors.append(f"api: {_short_err(e)}")
+
+        # 3) страница пина: JSON-блок именно этого pid, затем og:video
+        if not pick:
+            try:
+                async with s.get(f"https://www.pinterest.com/pin/{pid}/", headers=hdrs_html) as r:
+                    if r.status >= 400:
+                        errors.append(f"page: HTTP {r.status}")
+                        html = ""
+                    else:
+                        html = await r.text(errors="ignore")
+            except Exception as e:
+                html = ""
+                errors.append(f"page: {_short_err(e)}")
+            if html:
+                for m in re.finditer(r'<script[^>]*type=["\']application/json["\'][^>]*>(.+?)</script>', html, re.S | re.I):
+                    try:
+                        blob = json.loads(m.group(1))
+                    except Exception:
+                        continue
+                    node = _find_key(blob, pid)
+                    if isinstance(node, dict):
+                        pick = _pin_pick_from_lists(_collect_video_lists(node))
+                        if pick:
+                            title = title or str(node.get("title") or node.get("grid_title") or "")
+                            break
+                if not pick:
+                    mv = re.search(r'<meta[^>]+property=["\']og:video(?::url|:secure_url)?["\'][^>]+content=["\']([^"\']+)', html, re.I)
+                    if mv:
+                        u = _unescape_url(mv.group(1))
+                        pick = {"url": u, "w": 0, "h": 0, "d": 0, "hls": u.split("?")[0].lower().endswith(".m3u8")}
+                        mt = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']*)', html, re.I)
+                        title = title or (mt.group(1) if mt else "")
+                if not pick:
+                    errors.append("page: нет видео")
+
+    if not pick:
+        raise RuntimeError("Pinterest: в пине нет видео (возможно, это картинка) — " + "; ".join(errors[-3:] or ["нет данных"]))
+    info = _make_info(vid=pid, url=url, media_url=pick["url"], title=title, duration=pick["d"],
+                      width=pick["w"], height=pick["h"], source="pinterest")
+    if pick.get("hls"):
+        info["_hls"] = True
+    return info
+
+
+def _unescape_url(u: str) -> str:
+    return (u.replace("\\u002F", "/").replace("\\/", "/").replace("&amp;", "&")
+             .replace("\\u0026", "&").strip())
+
+
+async def ffmpeg_hls_to_mp4(ffmpeg: str, url: str, out_dir: Path, max_bytes: int = 0) -> Path:
+    dst = Path(out_dir) / f"fb_{uuid.uuid4().hex[:10]}.mp4"
+    proc = await asyncio.create_subprocess_exec(
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-user_agent", _UA_DESKTOP,
+        "-i", url, "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", str(dst),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=240)
+    except asyncio.TimeoutError:
+        with contextlib.suppress(Exception):
+            proc.kill()
+        dst.unlink(missing_ok=True)
+        raise RuntimeError("ffmpeg: таймаут при загрузке HLS")
+    if proc.returncode != 0 or not dst.exists() or dst.stat().st_size <= 0:
+        dst.unlink(missing_ok=True)
+        raise RuntimeError("ffmpeg не смог скачать HLS: " + (err or b"").decode("utf-8", "ignore")[:200])
+    if max_bytes and dst.stat().st_size > max_bytes:
+        dst.unlink(missing_ok=True)
+        raise RuntimeError(f"File too large (> {max_bytes} bytes)")
+    return dst
+
 # -------------------------------------------------------------- единая точка входа
 async def fallback_info(url: str) -> Dict[str, Any]:
     if is_twitter_url(url):
         return await twitter_fx_info(url)
     if is_reddit_url(url):
         return await reddit_info(url)
+    if is_pinterest_url(url):
+        return await pinterest_info(url)
     raise RuntimeError("для этой площадки нет запасного способа")
 
 
@@ -371,6 +573,12 @@ async def fallback_download(info: Dict[str, Any], out_dir: Path, max_bytes: int 
     headers = {}
     if str(info.get("_fallback", "")).startswith("reddit"):
         headers["Referer"] = "https://www.reddit.com/"
+    if info.get("_fallback") == "pinterest":
+        headers["Referer"] = "https://www.pinterest.com/"
+    if info.get("_hls"):
+        if not ffmpeg:
+            raise RuntimeError("fallback: у видео только HLS, а ffmpeg не найден")
+        return await ffmpeg_hls_to_mp4(ffmpeg, media_url, out_dir, max_bytes=max_bytes)
     video = await download_direct(media_url, out_dir, max_bytes=max_bytes, headers=headers)
 
     # Reddit: видео и звук лежат отдельными файлами — склеиваем (без ffmpeg отдаём видео без звука).

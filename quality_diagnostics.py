@@ -27,6 +27,11 @@ async def maybe_report_limited_quality(
 ) -> None:
     global _last_warn_ts
 
+    # Предупреждение «yt-dlp отстал» — про плеер YouTube. У Pinterest/VK/Instagram низкое
+    # качество — нормальное явление, ложные тревоги в лог не шлём.
+    if platform != "youtube":
+        return
+
     explicit_warning = bool(info.get("_limited_formats_warning"))
     heights = [q["height"] for q in qualities]
     best_side = info.get("_best_side")
