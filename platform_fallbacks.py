@@ -429,6 +429,51 @@ def _pin_pick_from_lists(lists: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
     return None
 
 
+def _pin_cookie_header() -> str:
+    """Cookie-заголовок для pinterest.* из того же cookies.txt, что использует yt-dlp
+    (YTDLP_COOKIES_FILE / YTDLP_COOKIES_B64). Нужен для 18+/ограниченных пинов."""
+    try:
+        import base64, tempfile
+        from http.cookiejar import MozillaCookieJar
+        from config import YTDLP_COOKIES_FILE, YTDLP_COOKIES_B64
+        path = YTDLP_COOKIES_FILE if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file() else ""
+        if not path and YTDLP_COOKIES_B64:
+            tmp = Path(tempfile.gettempdir()) / "pin_cookies.txt"
+            tmp.write_bytes(base64.b64decode(YTDLP_COOKIES_B64))
+            path = str(tmp)
+        if not path:
+            return ""
+        jar = MozillaCookieJar(path)
+        jar.load(ignore_discard=True, ignore_expires=True)
+        return "; ".join(f"{c.name}={c.value}" for c in jar if "pinterest" in (c.domain or ""))
+    except Exception:
+        return ""
+
+
+def _pin_parse_html(html: str, pid: str):
+    """(pick|None, title) из HTML страницы пина: JSON-блоки именно этого pid, затем og:video."""
+    pick: Optional[Dict[str, Any]] = None
+    title = ""
+    for m in re.finditer(r'<script[^>]*type=["\']application/json["\'][^>]*>(.+?)</script>', html, re.S | re.I):
+        try:
+            blob = json.loads(m.group(1))
+        except Exception:
+            continue
+        node = _find_key(blob, pid)
+        if isinstance(node, dict):
+            pick = _pin_pick_from_lists(_collect_video_lists(node))
+            if pick:
+                title = str(node.get("title") or node.get("grid_title") or "")
+                return pick, title
+    mv = re.search(r'<meta[^>]+(?:property|name)=["\']og:video(?::url|:secure_url)?["\'][^>]+content=["\']([^"\']+)', html, re.I)
+    if mv:
+        u = _unescape_url(mv.group(1))
+        pick = {"url": u, "w": 0, "h": 0, "d": 0, "hls": u.split("?")[0].lower().endswith(".m3u8")}
+        mt = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']*)', html, re.I)
+        title = mt.group(1) if mt else ""
+    return pick, title
+
+
 async def pinterest_info(url: str) -> Dict[str, Any]:
     errors: List[str] = []
     timeout = aiohttp.ClientTimeout(total=20)
@@ -457,66 +502,97 @@ async def pinterest_info(url: str) -> Dict[str, Any]:
         title = ""
         pick: Optional[Dict[str, Any]] = None
 
-        # 2) внутренний API пина (данные именно этого pid)
-        data = json.dumps({"options": {"id": pid, "field_set_key": "unauth_react_main_pin", "noCache": True,
-                                       "fetch_visual_search_objects": False}, "context": {}},
-                          separators=(",", ":"))
         from urllib.parse import quote
-        api = (f"https://www.pinterest.com/resource/PinResource/get/?source_url={quote(f'/pin/{pid}/', safe='')}"
-               f"&data={quote(data, safe='')}")
-        try:
-            async with s.get(api, headers={"User-Agent": _UA_DESKTOP, "Accept": "application/json",
-                                           "X-Requested-With": "XMLHttpRequest",
-                                           "X-Pinterest-AppState": "active",
-                                           "Referer": f"https://www.pinterest.com/pin/{pid}/"}) as r:
-                if r.status >= 400:
-                    errors.append(f"api: HTTP {r.status}")
-                else:
-                    js = await r.json(content_type=None)
-                    pdata = (js.get("resource_response") or {}).get("data") if isinstance(js, dict) else None
-                    if isinstance(pdata, dict):
-                        title = str(pdata.get("title") or pdata.get("grid_title") or pdata.get("description") or "")
-                        pick = _pin_pick_from_lists(_collect_video_lists(pdata))
-                        if not pick:
-                            errors.append("api: в данных пина нет video_list")
-                    else:
-                        errors.append("api: пустой ответ")
-        except Exception as e:
-            errors.append(f"api: {_short_err(e)}")
+        cookie = _pin_cookie_header()
+        api_hdrs_extra = {"Cookie": cookie} if cookie else {}
+        if cookie:
+            hdrs_html = {**hdrs_html, **api_hdrs_extra}
 
-        # 3) страница пина: JSON-блок именно этого pid, затем og:video
+        # 2) внутренний API пина (данные именно этого pid). Пробуем www и регион из
+        #    редиректа pin.it (pinterest.ru/.de/…), два набора полей. 403 на хосте — на нём
+        #    больше не долбимся (антибот), переходим к обходным способам ниже.
+        hosts = ["www.pinterest.com"]
+        h2 = urlparse(cur).hostname or ""
+        if "pinterest." in h2 and h2 not in hosts:
+            hosts.append(h2)
+        for host in hosts:
+            blocked = False
+            for fsk in ("unauth_react_main_pin", "detailed"):
+                if pick or blocked:
+                    break
+                data = json.dumps({"options": {"id": pid, "field_set_key": fsk, "noCache": True,
+                                               "fetch_visual_search_objects": False}, "context": {}},
+                                  separators=(",", ":"))
+                api = (f"https://{host}/resource/PinResource/get/?source_url={quote(f'/pin/{pid}/', safe='')}"
+                       f"&data={quote(data, safe='')}")
+                try:
+                    async with s.get(api, headers={"User-Agent": _UA_DESKTOP, "Accept": "application/json",
+                                                   "X-Requested-With": "XMLHttpRequest",
+                                                   "X-Pinterest-AppState": "active",
+                                                   "Referer": f"https://{host}/pin/{pid}/", **api_hdrs_extra}) as r:
+                        if r.status >= 400:
+                            errors.append(f"api: HTTP {r.status}")
+                            blocked = r.status in (401, 403, 429)
+                        else:
+                            js = await r.json(content_type=None)
+                            pdata = (js.get("resource_response") or {}).get("data") if isinstance(js, dict) else None
+                            if isinstance(pdata, dict):
+                                title = title or str(pdata.get("title") or pdata.get("grid_title") or pdata.get("description") or "")
+                                pick = _pin_pick_from_lists(_collect_video_lists(pdata))
+                                if not pick:
+                                    errors.append("api: в данных пина нет video_list")
+                            else:
+                                errors.append("api: пустой ответ")
+                except Exception as e:
+                    errors.append(f"api: {_short_err(e)}")
+
+        # 3) обход: публичный виджет Pinterest (pidgets) — отдаёт данные пина без авторизации
+        #    и без антибот-проверок основного сайта.
         if not pick:
             try:
-                async with s.get(f"https://www.pinterest.com/pin/{pid}/", headers=hdrs_html) as r:
+                wurl = f"https://widgets.pinterest.com/v3/pidgets/pins/info/?pin_ids={pid}"
+                async with s.get(wurl, headers={"User-Agent": _UA_DESKTOP, "Accept": "application/json",
+                                                "Referer": "https://www.pinterest.com/"}) as r:
                     if r.status >= 400:
-                        errors.append(f"page: HTTP {r.status}")
-                        html = ""
+                        errors.append(f"widget: HTTP {r.status}")
                     else:
-                        html = await r.text(errors="ignore")
+                        js = await r.json(content_type=None)
+                        items = js.get("data") if isinstance(js, dict) else None
+                        if isinstance(items, list) and items:
+                            title = title or str((items[0] or {}).get("title") or (items[0] or {}).get("description") or "")
+                            pick = _pin_pick_from_lists(_collect_video_lists(items))
+                        if not pick:
+                            errors.append("widget: нет video_list")
             except Exception as e:
-                html = ""
-                errors.append(f"page: {_short_err(e)}")
-            if html:
-                for m in re.finditer(r'<script[^>]*type=["\']application/json["\'][^>]*>(.+?)</script>', html, re.S | re.I):
-                    try:
-                        blob = json.loads(m.group(1))
-                    except Exception:
-                        continue
-                    node = _find_key(blob, pid)
-                    if isinstance(node, dict):
-                        pick = _pin_pick_from_lists(_collect_video_lists(node))
-                        if pick:
-                            title = title or str(node.get("title") or node.get("grid_title") or "")
-                            break
+                errors.append(f"widget: {_short_err(e)}")
+
+        # 4) страница пина: сначала как браузер, затем как поисковый/соц-бот (боты получают
+        #    серверный рендер с og:video даже для пинов, где браузеру показывают «войдите»).
+        if not pick:
+            uas = (
+                ("browser", _UA_DESKTOP),
+                ("pinterestbot", "Pinterest/0.2 (+http://www.pinterest.com/bot.html)"),
+                ("facebook", "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"),
+                ("googlebot", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"),
+                ("mobile", _UA_MOBILE),
+            )
+            for tag, ua in uas:
+                if pick:
+                    break
+                hdrs = {"User-Agent": ua, "Accept": "text/html,*/*", "Accept-Language": "en-US,en;q=0.9", **api_hdrs_extra}
+                try:
+                    async with s.get(f"https://www.pinterest.com/pin/{pid}/", headers=hdrs) as r:
+                        if r.status >= 400:
+                            errors.append(f"page[{tag}]: HTTP {r.status}")
+                            continue
+                        html = await r.text(errors="ignore")
+                except Exception as e:
+                    errors.append(f"page[{tag}]: {_short_err(e)}")
+                    continue
+                pick, t2 = _pin_parse_html(html, pid)
+                title = title or t2
                 if not pick:
-                    mv = re.search(r'<meta[^>]+property=["\']og:video(?::url|:secure_url)?["\'][^>]+content=["\']([^"\']+)', html, re.I)
-                    if mv:
-                        u = _unescape_url(mv.group(1))
-                        pick = {"url": u, "w": 0, "h": 0, "d": 0, "hls": u.split("?")[0].lower().endswith(".m3u8")}
-                        mt = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']*)', html, re.I)
-                        title = title or (mt.group(1) if mt else "")
-                if not pick:
-                    errors.append("page: нет видео")
+                    errors.append(f"page[{tag}]: нет видео")
 
     if not pick:
         raise RuntimeError("Pinterest: в пине нет видео (возможно, это картинка) — " + "; ".join(errors[-3:] or ["нет данных"]))

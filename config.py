@@ -219,7 +219,10 @@ MAX_VIDEO_BYTES = MAX_VIDEO_MB * 1024 * 1024
 # сжимаем видео через ffmpeg до нужного размера. Скачиваем при этом файлы
 # до DOWNLOAD_HARD_CAP_MB (больше — уже отказ, чтобы не забить диск/время).
 COMPRESS_OVER_LIMIT = os.getenv("COMPRESS_OVER_LIMIT", "1").strip() == "1"
-DOWNLOAD_HARD_CAP_MB = int(os.getenv("DOWNLOAD_HARD_CAP_MB", "600"))
+# С локальным Bot API (отправка до ~2 ГБ) потолок скачивания должен быть не ниже
+# лимита отправки — иначе файлы 600 МБ…2 ГБ отваливаются на скачивании
+# ("File too large (> 629145600 bytes)"). Без локального API — 600 МБ (дальше сжатие).
+DOWNLOAD_HARD_CAP_MB = int(os.getenv("DOWNLOAD_HARD_CAP_MB", "2000" if LOCAL_BOT_API_URL else "600"))
 DOWNLOAD_HARD_CAP_BYTES = DOWNLOAD_HARD_CAP_MB * 1024 * 1024
 
 # Куки для yt-dlp (YouTube "Sign in to confirm you're not a bot", Instagram,
@@ -246,14 +249,20 @@ def downgrade_to_cloud_limits() -> None:
     в том числе в уже импортированных модулях (они копируют константы при import)."""
     import sys
     global LOCAL_BOT_API_URL, YOUTUBE_MAX_VIDEO_MB, YOUTUBE_MAX_VIDEO_BYTES, MAX_VIDEO_MB, MAX_VIDEO_BYTES
+    global DOWNLOAD_HARD_CAP_MB, DOWNLOAD_HARD_CAP_BYTES
     LOCAL_BOT_API_URL = ""
+    if "DOWNLOAD_HARD_CAP_MB" not in os.environ:
+        DOWNLOAD_HARD_CAP_MB = 600
+        DOWNLOAD_HARD_CAP_BYTES = 600 * 1024 * 1024
     YOUTUBE_MAX_VIDEO_MB = MAX_VIDEO_MB = 49
     YOUTUBE_MAX_VIDEO_BYTES = MAX_VIDEO_BYTES = 49 * 1024 * 1024
     for mod in list(sys.modules.values()):
         if mod is None or getattr(mod, "__name__", "") == __name__:
             continue
         for name, val in (("MAX_VIDEO_MB", 49), ("MAX_VIDEO_BYTES", 49 * 1024 * 1024),
-                          ("YOUTUBE_MAX_VIDEO_MB", 49), ("YOUTUBE_MAX_VIDEO_BYTES", 49 * 1024 * 1024)):
+                          ("YOUTUBE_MAX_VIDEO_MB", 49), ("YOUTUBE_MAX_VIDEO_BYTES", 49 * 1024 * 1024)) + (
+                (("DOWNLOAD_HARD_CAP_MB", DOWNLOAD_HARD_CAP_MB), ("DOWNLOAD_HARD_CAP_BYTES", DOWNLOAD_HARD_CAP_BYTES))
+                if "DOWNLOAD_HARD_CAP_MB" not in os.environ else ()):
             if name in getattr(mod, "__dict__", {}):
                 setattr(mod, name, val)
 

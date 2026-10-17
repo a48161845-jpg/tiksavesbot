@@ -78,13 +78,17 @@ async def check_and_update(bot=None) -> None:
 
     if bot is not None:
         with contextlib.suppress(Exception):
-            from logging_channel import send_channel_log
-            await send_channel_log(bot, f"🔄 <b>yt-dlp обновлён</b>: {before} → {after}\nПерезапускаюсь, чтобы применить.")
+            # Напрямую, а не через очередь: os.execv ниже убивает процесс до того,
+            # как фоновый воркер успел бы отправить сообщение из очереди.
+            from logging_channel import send_channel_log_reliable
+            await send_channel_log_reliable(bot, attempts=2, text=f"🔄 <b>yt-dlp обновлён</b>: {before} → {after}\nПерезапускаюсь, чтобы применить.")
     with contextlib.suppress(Exception):
         from storage import store
         await store.save_unthrottled()
 
     os.environ["YTDLP_RESTARTED"] = "1"
+    # execv не вызывает finally в bot.py — останавливаем локальный Bot API вручную не нужно
+    # (новый процесс увидит занятый порт и подхватит его), но БД/сессии закрываем штатно.
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 

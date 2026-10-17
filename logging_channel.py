@@ -10,6 +10,7 @@ from typing import Optional, Tuple, List
 
 from aiogram import Bot
 from aiogram.types import LinkPreviewOptions
+from aiogram.exceptions import TelegramRetryAfter, TelegramBadRequest
 
 from config import LOG_CHANNEL_ID, AUTO_SAVE_INTERVAL_SEC, log
 from helpers import html_escape, code, now_msk_str
@@ -125,10 +126,10 @@ async def _log_worker(bot: Bot) -> None:
                 if dt < LOG_RATE_LIMIT_SEC:
                     await asyncio.sleep(LOG_RATE_LIMIT_SEC - dt)
 
-                await bot.send_message(chat_id, text, parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
+                await send_channel_log_reliable(bot, text, chat_id=chat_id, attempts=3)
                 _last_log_ts = time.time()
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("log worker: не удалось отправить лог в канал %s: %s: %s", chat_id, e.__class__.__name__, e)
             finally:
                 _log_queue.task_done()
         except asyncio.CancelledError:
@@ -153,6 +154,33 @@ async def stop_log_worker() -> None:
         with contextlib.suppress(Exception):
             await _log_worker_task
 
+async def send_channel_log_reliable(bot: Bot, text: str, chat_id: int = 0, attempts: int = 5) -> bool:
+    """Отправка прямо сейчас (не через очередь) с ретраями: flood-wait, сеть, битый HTML.
+    Для важных сообщений (запуск/остановка/перед перезапуском). Ошибки не глотаются — пишутся в лог."""
+    chat_id = chat_id or LOG_CHANNEL_ID
+    parse_mode = "HTML"
+    last: Optional[Exception] = None
+    for i in range(attempts):
+        try:
+            await bot.send_message(chat_id, text, parse_mode=parse_mode,
+                                   link_preview_options=LinkPreviewOptions(is_disabled=True))
+            return True
+        except TelegramRetryAfter as e:
+            last = e
+            await asyncio.sleep(min(float(e.retry_after) + 1, 60))
+        except TelegramBadRequest as e:
+            last = e
+            if parse_mode and "parse" in str(e).lower():
+                parse_mode = None  # битая HTML-разметка — шлём как обычный текст
+                continue
+            break  # chat not found / not enough rights и т.п. — ретраи бесполезны
+        except Exception as e:
+            last = e
+            await asyncio.sleep(2 * (i + 1))
+    log.error("send_channel_log_reliable: не удалось отправить в %s: %s: %s",
+              chat_id, last.__class__.__name__, last)
+    return False
+
 async def send_channel_log(_bot: Bot, text: str) -> None:
     try:
         _log_queue.put_nowait((LOG_CHANNEL_ID, text))
@@ -167,6 +195,15 @@ async def log_event(bot: Bot, category: str, lines: List[str]) -> None:
     if category == "audiodl":
         t_base = "#audiodl #audiodl23"
     header = f"🧾 Лог: <b>{html_escape(category)}</b>\n🕒 {now_msk_str()}"
+    lines = list(lines)
+    if category == "dlerr":
+        try:
+            from error_explain import explain_log_line
+            hint = explain_log_line(lines)
+            if hint:
+                lines.append(hint)
+        except Exception:
+            pass
     await send_channel_log(bot, f"{t_base} {t_num}\n" + "\n".join([header, *lines]))
 
 async def log_admin_action_to_channel(bot: Bot, title: str, lines: List[str]) -> None:

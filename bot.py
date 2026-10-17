@@ -21,7 +21,7 @@ from storage import store, init_db, close_db
 import globals_state
 from globals_state import dp
 from providers import TikWMClient, BaseProvider, ProviderSwitcher
-from logging_channel import autosave_loop, start_log_worker, stop_log_worker, send_channel_log
+from logging_channel import autosave_loop, start_log_worker, stop_log_worker, send_channel_log, send_channel_log_reliable
 from db_report import send_db_json
 from local_bot_api import start_local_bot_api, stop_local_bot_api
 from ytdlp_updater import autoupdate_loop
@@ -145,7 +145,9 @@ async def main():
                 else "🧩 JS-движок (deno/node): <b>НЕ найден</b> ⚠️ — YouTube отдаст только звук и превью "
                 "(ошибка «Requested format is not available»). Проверь, что в requirements.txt установился пакет deno."
             )
-            await send_channel_log(
+            # Напрямую и с ретраями (не через очередь), чтобы сообщение о запуске
+            # не терялось молча при flood-wait / сетевой ошибке на старте.
+            await send_channel_log_reliable(
                 bot,
                 "🚀 <b>Бот запущен</b>\n"
                 f"🤖 Бот: @{me.username} (<code>{me.id}</code>)\n"
@@ -178,9 +180,10 @@ async def main():
             uptime_sec = int(time.time() - start_ts)
             uptime_str = f"{uptime_sec // 3600}ч {(uptime_sec % 3600) // 60}м {uptime_sec % 60}с"
             with contextlib.suppress(Exception):
-                await send_channel_log(
+                await send_channel_log_reliable(
                     bot,
-                    "🛑 <b>Бот остановлен</b>\n"
+                    attempts=2,
+                    text="🛑 <b>Бот остановлен</b>\n"
                     f"{shutdown_reason}\n"
                     f"⏳ Время работы: <b>{uptime_str}</b>\n"
                     f"👥 Пользователей в базе: <b>{store.get_users_count()}</b>\n"
