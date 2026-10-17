@@ -86,7 +86,12 @@ async def youtube_handler(message: Message):
             except Exception as e:
                 await _log_yt_err(message.bot, "probe", uid, label, url, e)
                 with contextlib.suppress(Exception):
-                    await status.edit_text(tr(message, "❌ Не удалось получить это видео. Проверь ссылку — может, оно приватное/удалено."))
+                    from error_explain import classify, explain_user
+                    from helpers import clamp_reason
+                    if classify(clamp_reason(e), "youtube", url) == "unknown":
+                        await status.edit_text(tr(message, "❌ Не удалось получить это видео. Проверь ссылку — может, оно приватное/удалено."))
+                    else:
+                        await status.edit_text(tr(message, explain_user(clamp_reason(e), "youtube", url)))
                 return
 
             duration = int(info.get("duration") or 0)

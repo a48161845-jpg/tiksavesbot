@@ -306,13 +306,8 @@ async def main_handler(message: Message, client: TikWMClient, switcher: Provider
             return
 
         store.inc_error("handler", e)
-        msg = tr(message, "❌ Не удалось скачать. Попробуй позже.")
-        if any(x in low for x in ["private", "приват", "недоступ", "unavailable"]):
-            msg = tr(message, "❌ Видео приватное или недоступно.")
-        elif any(x in low for x in ["deleted", "удален", "removed", "not found"]):
-            msg = tr(message, "❌ Видео удалено или не найдено.")
-        elif "url parsing" in low:
-            msg = tr(message, "❌ Не удалось разобрать ссылку. Проверь ссылку и попробуй ещё раз.")
+        from error_explain import explain_user
+        msg = tr(message, explain_user(reason, url=text))
         with contextlib.suppress(Exception):
             await status.edit_text(msg)
 

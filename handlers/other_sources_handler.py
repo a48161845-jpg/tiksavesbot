@@ -116,9 +116,8 @@ async def other_sources_handler(message: Message):
             except Exception as e:
                 await _log_err(message.bot, platform, "probe", uid, label, url, e)
                 with contextlib.suppress(Exception):
-                    await status.edit_text(
-                        tr(message, "❌ Не удалось получить видео с {p}.\nВозможно, пост закрытый/приватный или требует входа в аккаунт — такое, увы, не скачать.", p=platform_name)
-                    )
+                    from error_explain import explain_user
+                    await status.edit_text(tr(message, explain_user(clamp_reason(e), platform, url)))
                 return
 
             duration = int(info.get("duration") or 0)

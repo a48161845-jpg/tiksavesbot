@@ -141,9 +141,13 @@ async def quality_choice_callback(call: CallbackQuery):
             except Exception as e:
                 await _log_err(call.bot, platform, "download", uid, label, url, e)
                 with contextlib.suppress(Exception):
-                    await status.edit_text(
-                        tr(uid, "❌ Не получилось скачать в этом качестве с {p}. Попробуй другое качество или другую ссылку.", p=platform_name)
-                    )
+                    from error_explain import classify, explain_user
+                    from helpers import clamp_reason
+                    if classify(clamp_reason(e), platform, url) == "unknown":
+                        _m = tr(uid, "❌ Не получилось скачать в этом качестве с {p}. Попробуй другое качество или другую ссылку.", p=platform_name)
+                    else:
+                        _m = tr(uid, explain_user(clamp_reason(e), platform, url))
+                    await status.edit_text(_m)
                 return
 
             size = tmp_path.stat().st_size if tmp_path.exists() else 0
