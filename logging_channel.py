@@ -55,6 +55,7 @@ CAT_TAG = {
     "yt_dlp_outdated": "ytdlpold",
     "stars": "stars",
     "broadcast": "broadcast",
+    "ownergift": "ownergift",
     "admin": "admin",
 }
 
@@ -76,6 +77,7 @@ ALLOWED_LOG_CATEGORIES = {
     "adminadd",
     "admindel",
     "broadcast",
+    "ownergift",
 }
 
 def base_tag_for(category: str) -> str:

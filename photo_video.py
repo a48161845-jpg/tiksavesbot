@@ -14,6 +14,8 @@
 """
 import asyncio
 import contextlib
+import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -22,6 +24,8 @@ import aiohttp
 
 from youtube_provider import _FFMPEG_PATH
 from media_fetch import download_url, MediaFetchError
+
+log = logging.getLogger("photo_video")
 
 PHOTO_DURATION_SEC = 2.5      # сколько секунд показывается каждое фото
 LIVE_MAX_SEC = 3.5            # максимум секунд live-клипа в ролике
@@ -81,6 +85,55 @@ def _seg_live(clip: Path, out: Path) -> None:
     ], SEG_TIMEOUT_SEC, "live-клип")
 
 
+def _probe_duration(src: Path) -> float:
+    """Длительность файла в секундах (парсим stderr `ffmpeg -i`, ffprobe может отсутствовать); 0 — не удалось."""
+    try:
+        r = subprocess.run([_FFMPEG_PATH, "-hide_banner", "-i", str(src)], capture_output=True, timeout=30)
+    except Exception:
+        return 0.0
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", r.stderr.decode("utf-8", "ignore"))
+    if not m:
+        return 0.0
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+
+
+def _mux_music(video: Path, audio: Path, out_path: Path) -> None:
+    """
+    Накладывает музыку на готовое видео без звука.
+
+    БЫЛО (баг «звук не вставляется»): стоял фильтр afade=t=out:st=0:d=0.01 — то есть затухание
+    начиналось на 0-й секунде и за 0.01 с звук гасился полностью, дальше шла тишина. Видео при этом
+    собиралось «успешно», поэтому ошибки никто не видел. Теперь затухание — только последняя секунда.
+    """
+    dur = _probe_duration(video)
+    base = [
+        _FFMPEG_PATH, "-y", "-loglevel", "error", "-i", str(video),
+        "-stream_loop", "-1", "-i", str(audio),
+        "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+    ]
+    tail = ["-movflags", "+faststart", str(out_path)]
+    attempts = []
+    if dur > 0:
+        fade = min(1.0, dur / 2)
+        attempts.append(base + ["-af", f"afade=t=out:st={max(0.0, dur - fade):.2f}:d={fade:.2f}", "-t", f"{dur:.2f}"] + tail)
+        attempts.append(base + ["-t", f"{dur:.2f}"] + tail)  # без фильтров — на случай капризного аудио
+    attempts.append(base + ["-shortest"] + tail)
+
+    last_err: Optional[Exception] = None
+    for cmd in attempts:
+        try:
+            _run(cmd, SEG_TIMEOUT_SEC, "музыка")
+            if out_path.exists() and out_path.stat().st_size > 0:
+                return
+        except SlideshowBuildError as e:
+            last_err = e
+            log.warning("photo_video: не удалось наложить музыку: %s", e)
+    # музыка не легла (битый файл) — отдаём видео без звука, это лучше, чем ошибка
+    log.error("photo_video: музыка не наложена, видео уйдёт без звука: %s", last_err)
+    video.replace(out_path)
+
+
 def _build_sync(items: List[Tuple[Path, Optional[Path]]], audio_path: Optional[Path], out_path: Path) -> None:
     if not _FFMPEG_PATH:
         raise SlideshowBuildError("ffmpeg недоступен на сервере")
@@ -112,17 +165,7 @@ def _build_sync(items: List[Tuple[Path, Optional[Path]]], audio_path: Optional[P
         ], SEG_TIMEOUT_SEC, "склейка")
 
         if audio_path:
-            try:
-                _run([
-                    _FFMPEG_PATH, "-y", "-loglevel", "error", "-i", str(joined),
-                    "-stream_loop", "-1", "-i", str(audio_path),
-                    "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
-                    "-c:a", "aac", "-b:a", "128k", "-af", "afade=t=out:st=0:d=0.01",
-                    "-shortest", "-movflags", "+faststart", str(out_path),
-                ], SEG_TIMEOUT_SEC, "музыка")
-            except SlideshowBuildError:
-                # музыка не легла (битый файл) — отдаём видео без звука, это лучше, чем ошибка
-                joined.replace(out_path)
+            _mux_music(joined, audio_path, out_path)
         if not out_path.exists() or out_path.stat().st_size == 0:
             raise SlideshowBuildError("ffmpeg не создал файл")
     finally:

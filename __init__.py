@@ -15,6 +15,7 @@ from . import history_command
 from . import admin_commands
 from . import admin_callbacks
 from . import donate_callbacks
+from . import owner_gift_callbacks
 from . import help_callbacks
 from . import settings_handler
 from . import picker_callbacks

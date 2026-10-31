@@ -117,3 +117,5 @@ def _ensure_loaded() -> None:
     register_extra(_reg)
     from i18n_cis import register_cis
     register_cis(_add_cis)
+    from i18n_gifts import register_gifts
+    register_gifts(_reg)

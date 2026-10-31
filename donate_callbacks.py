@@ -114,6 +114,11 @@ async def donate_cb(call: CallbackQuery):
         await call.answer()
         return
 
+    if action == "gifts":
+        from handlers.owner_gift_callbacks import show_list
+        await show_list(call)
+        return
+
     if action == "support":
         await call.answer()
         if call.message:
@@ -156,6 +161,12 @@ async def stars_cb(call: CallbackQuery):
 
 @dp.pre_checkout_query()
 async def pre_checkout(pre: PreCheckoutQuery):
+    payload = pre.invoice_payload or ""
+    if payload.startswith("ogift:"):
+        import owner_gifts as og
+        if not og.pending_exists(payload.split(":", 1)[1]):
+            await pre.answer(ok=False, error_message=tr(pre.from_user.id, og.S_EXPIRED))
+            return
     await pre.answer(ok=True)
 
 
@@ -170,6 +181,29 @@ async def payment_ok(message: Message):
 
     stars = int(message.successful_payment.total_amount)
     store.add_stars(uid, stars)
+
+    payload = message.successful_payment.invoice_payload or ""
+    if payload.startswith("ogift:"):
+        import owner_gifts as og
+        pend = og.pop_pending(payload.split(":", 1)[1])
+        charge_id = getattr(message.successful_payment, "telegram_payment_charge_id", "") or ""
+        if not pend:
+            await message.answer(tr(message, og.S_PAID_LOST), parse_mode="HTML")
+            await log_event(
+                message.bot, "ownergift",
+                [
+                    "🎁 Категория: <b>Подарок владельцу</b>",
+                    "⚠️ Оплата прошла, но данные подарка потерялись (рестарт/истёк срок)",
+                    f"👤 От кого (реально): <b>{format_user_for_log(label, uid)}</b>",
+                    f"💫 Сумма: <b>{stars} ⭐</b>",
+                    f"🧾 charge_id: <code>{charge_id}</code>",
+                ],
+            )
+            return
+        og.sessions.pop(uid, None)
+        await og.deliver_gift(message.bot, uid, label, pend, stars, charge_id)
+        await message.answer(tr(message, og.S_PAID_OK), parse_mode="HTML")
+        return
 
     await message.answer(
         tr(message, "✅ <b>Оплата прошла!</b>\nПолучено: <b>{stars} ⭐</b>\n\nСпасибо за поддержку 🙌", stars=stars),

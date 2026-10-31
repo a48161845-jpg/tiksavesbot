@@ -73,6 +73,7 @@ def donate_main_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=tr(lang, "⭐ Донат звёздами"), callback_data="donate:stars")],
+            [InlineKeyboardButton(text=tr(lang, "🎁 Подарить подарок"), callback_data="donate:gifts")],
             [InlineKeyboardButton(text="💳 Donation Alerts", url=DONATIONALERTS_URL)],
             [InlineKeyboardButton(text=tr(lang, "🆘 Поддержка"), callback_data="donate:support")],
         ]
