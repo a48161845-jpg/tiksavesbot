@@ -1,0 +1,543 @@
+"""
+Провайдеры скачивания медиа из TikTok: основной (tikwm.com API) и логика
+переключения между несколькими инстансами/попытками при сбоях.
+"""
+import json
+import os
+import re
+import time
+import asyncio
+import contextlib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Optional, Dict, Any, List
+from collections import deque
+
+import aiohttp
+from aiohttp import ClientPayloadError
+from aiogram import Bot
+
+from core.config import (
+    API_URL,
+    TIKWM_COOLDOWN_SEC,
+    API_ERROR_WINDOW_SEC,
+    API_ERROR_THRESHOLD,
+)
+from core.helpers import html_escape, code, clamp_reason, ms_since, exc_type_name, resolve_tiktok_redirect, normalize_tiktok_url, is_tiktok_short_url, extract_tiktok_video_id, normalize_description as _normalize_description
+from core.storage import store
+from core.logging_channel import log_event
+from downloaders.tiktok_live import photos_and_live, parse_page_html
+from downloaders.song_search import song_from_tikwm
+
+
+class _FileTooLargeError(Exception):
+    """Внутренний сигнал: файл превышает лимит. Не логируется как dlerr."""
+
+
+# ================== PROVIDERS ==================
+@dataclass
+class MediaInfo:
+    video: Optional[str]
+    photos: List[str]
+    music: Optional[str]
+    description: Optional[str] = None
+    # live photo: URL фото -> URL короткого видеоклипа (если у кадра есть «живая» версия)
+    live: Optional[Dict[str, str]] = None
+    # песня из поста (если источник отдал её название): название, исполнитель, «оригинальный звук» ли это, обложка
+    music_title: Optional[str] = None
+    music_author: Optional[str] = None
+    music_original: Optional[bool] = None
+    music_cover: Optional[str] = None
+
+
+def _deep_find_str(data: Any, keys: List[str], _depth: int = 0) -> Optional[str]:
+    """
+    Рекурсивно ищет в JSON (dict/list) первое строковое значение по одному
+    из ключей-кандидатов. Нужен для запасных источников, у которых точная
+    форма ответа может отличаться/меняться — сканируем несколько вариантов
+    вложенности вместо жёсткой привязки к одному пути. Сейчас не задействован
+    (запасной провайдер убран), оставлен как готовый утиль на будущее.
+    """
+    if _depth > 4 or data is None:
+        return None
+    if isinstance(data, dict):
+        for k in keys:
+            v = data.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        for v in data.values():
+            if isinstance(v, (dict, list)):
+                r = _deep_find_str(v, keys, _depth + 1)
+                if r:
+                    return r
+    elif isinstance(data, list):
+        for item in data:
+            r = _deep_find_str(item, keys, _depth + 1)
+            if r:
+                return r
+    return None
+
+
+class BaseProvider:
+    name = "base"
+    async def get_media(self, url: str) -> MediaInfo:
+        raise NotImplementedError
+    async def download_to_file(
+        self,
+        url: str,
+        path: Path,
+        max_bytes: int,
+        stage: str,
+        progress_cb: Optional[Callable] = None,
+        cancel_cb: Optional[Callable] = None,
+    ) -> int:
+        raise NotImplementedError
+
+
+class _DlErrMixin:
+    """Общая логика логирования ошибок скачивания — используется всеми провайдерами."""
+    bot: Optional[Bot] = None
+
+    async def _log_dlerr(self, stage: str, src: str, attempt: int, dur_ms: int, err: Exception) -> None:
+        # stats error counter
+        try:
+            store.inc_error(stage, err)
+        except Exception:
+            pass
+
+        if not self.bot:
+            return
+        reason = clamp_reason(err)
+        await log_event(
+            self.bot,
+            "dlerr",
+            [
+                "❌ Категория: <b>Ошибка скачивания</b>",
+                f"🧩 Стадия: <b>{html_escape(stage)}</b>",
+                f"🧬 Тип: <b>{html_escape(exc_type_name(err))}</b>",
+                f"🔁 Попытка: <b>{attempt}</b>",
+                f"⏱️ Время: <b>{dur_ms} мс</b>",
+                f"🔗 Ссылка: {code(src)}",
+                f"🧨 Причина: <b>{html_escape(reason)}</b>",
+            ],
+        )
+
+
+class TikWMClient(_DlErrMixin, BaseProvider):
+    name = "tikwm"
+
+    # Общий для всех запросов "тормоз" перед вызовом tikwm API — небольшая
+    # пауза между запросами, чтобы не словить рейт-лимит бесплатного API
+    # (лок и таймстемп на уровне класса — общие для всех инстансов и всех
+    # параллельных скачиваний, а не привязаны к конкретному пользователю).
+    _cooldown_lock = asyncio.Lock()
+    _last_call_ts = 0.0
+
+    def __init__(self, session: aiohttp.ClientSession, bot: Optional[Bot] = None):
+        self.session = session
+        self.bot = bot
+
+    # Хуки для наследников: чем и как скачивать файл (tikwm отдаёт «открытые» ссылки — хватает UA)
+    def _dl_headers(self, url: str) -> Dict[str, str]:
+        return {"User-Agent": "Mozilla/5.0", "Accept": "*/*", "Connection": "keep-alive"}
+
+    def _dl_proxy(self, url: str) -> Optional[str]:
+        return None
+
+    @classmethod
+    async def _respect_cooldown(cls) -> None:
+        async with cls._cooldown_lock:
+            now = time.monotonic()
+            wait = TIKWM_COOLDOWN_SEC - (now - cls._last_call_ts)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            cls._last_call_ts = time.monotonic()
+
+    @staticmethod
+    def _media_from_data(data: Dict[str, Any]) -> MediaInfo:
+        video = data.get("play") or data.get("wmplay")
+
+        photos: List[str] = []
+        live: Dict[str, str] = {}
+        for key in ("images", "image", "photos"):
+            v = data.get(key)
+            if isinstance(v, list) and v:
+                photos, live = photos_and_live(v)
+                # параллельный список живых клипов на уровне поста
+                for lk in ("live_photos", "livePhotos", "live_videos", "motion_photos"):
+                    lv = data.get(lk)
+                    if isinstance(lv, list) and photos:
+                        for pu, item in zip(photos, lv):
+                            if isinstance(item, dict):
+                                item = item.get("url") or item.get("video") or item.get("play")
+                            if isinstance(item, str) and item.startswith("http"):
+                                live[pu] = item
+                break
+
+        music = None
+        for k in ("music", "music_url", "musicUrl", "playUrl", "music_play", "musicPlay"):
+            v = data.get(k)
+            if isinstance(v, str) and v.startswith("http"):
+                music = v
+                break
+
+        if not music:
+            mi = data.get("music_info") or data.get("musicInfo") or {}
+            if isinstance(mi, dict):
+                for k in ("play", "play_url", "playUrl", "url"):
+                    v = mi.get(k)
+                    if isinstance(v, str) and v.startswith("http"):
+                        music = v
+                        break
+
+        # tikwm иногда для фото-постов (нет отдельного видео) кладёт в
+        # "play"/"wmplay" ссылку на музыку — если video и music совпадают,
+        # это не видео, это просто звук поста. Не считаем это видео.
+        if video and music and video == music:
+            video = None
+
+        description = None
+        for k in ("title", "desc", "description"):
+            v = data.get(k)
+            if isinstance(v, str) and v.strip():
+                description = _normalize_description(v.strip())
+                break
+
+        song = song_from_tikwm(data)
+        return MediaInfo(video=video, photos=photos, music=music, description=description, live=live or None,
+                         music_title=song and song["title"], music_author=song and song["author"],
+                         music_original=song and song["original"], music_cover=song and song["cover"])
+
+    async def _get_media_once(self, url: str, headers: Dict[str, str]) -> MediaInfo:
+        await self._respect_cooldown()
+        async with self.session.post(API_URL, data={"url": url, "hd": 1}, headers=headers) as resp:
+            raw = await resp.read()
+            if not raw:
+                raise RuntimeError("Empty response body from API")
+            js = json.loads(raw.decode("utf-8", "ignore"))
+        if js.get("code") != 0 or "data" not in js:
+            raise RuntimeError(f"API error: {js}")
+        return self._media_from_data(js["data"])
+
+    async def get_media(self, url: str) -> MediaInfo:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json,text/plain,*/*",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Connection": "keep-alive",
+        }
+
+        # Запасные формы той же ссылки на случай "Url parsing is failed":
+        # tikwm иногда не переваривает одну форму URL, но принимает другую.
+        candidates = [url]
+        vid = extract_tiktok_video_id(url)
+        if vid:
+            mu = re.search(r"tiktok\.com/@([^/?#]+)/", url)
+            user = mu.group(1) if mu else ""
+            alts = []
+            if user:
+                # одна и та же публикация открывается и как /video/, и как /photo/ — tikwm бывает
+                # разборчив к одной из форм (особенно у фото и live-фото)
+                alts += [f"https://www.tiktok.com/@{user}/video/{vid}", f"https://www.tiktok.com/@{user}/photo/{vid}"]
+            alts += [f"https://m.tiktok.com/v/{vid}.html", f"https://www.tiktok.com/@/video/{vid}"]
+            for alt in alts:
+                if alt not in candidates:
+                    candidates.append(alt)
+
+        last_err: Optional[Exception] = None
+        for cand_i, cand in enumerate(candidates):
+            for attempt in range(1, 4):
+                t0 = time.perf_counter()
+                try:
+                    return await self._get_media_once(cand, headers)
+                except (ClientPayloadError, aiohttp.ClientConnectionError, aiohttp.ServerDisconnectedError,
+                        asyncio.TimeoutError, aiohttp.ClientOSError, aiohttp.ClientResponseError) as e:
+                    last_err = e
+                    await self._log_dlerr("api", cand, attempt, ms_since(t0), e)
+                    await asyncio.sleep(0.6 * attempt)
+                    continue
+                except Exception as e:
+                    last_err = e
+                    low = str(e).lower()
+                    # Парсинг URL — пробуем другую форму ссылки; остальное (приватное
+                    # видео и т.п.) повторять бессмысленно.
+                    if "url parsing" in low and cand_i < len(candidates) - 1:
+                        break
+                    await self._log_dlerr("api", cand, attempt, ms_since(t0), e)
+                    raise
+
+        raise RuntimeError(f"TikWM fetch failed after retries: {last_err}") from last_err
+
+    async def download_to_file(
+        self,
+        url: str,
+        path: Path,
+        max_bytes: int,
+        stage: str,
+        progress_cb: Optional[Callable] = None,
+        cancel_cb: Optional[Callable] = None,
+    ) -> int:
+        headers = self._dl_headers(url)
+        proxy = self._dl_proxy(url)
+
+        last_err: Optional[Exception] = None
+        for attempt in range(1, 4):
+            t0 = time.perf_counter()
+            tmp = path.with_suffix(path.suffix + ".part")
+            size = 0
+            try:
+                async with self.session.get(url, headers=headers, allow_redirects=True, proxy=proxy) as resp:
+                    resp.raise_for_status()
+                    total = resp.content_length or 0
+                    # Проверяем Content-Length заранее — не тратим трафик
+                    if total > max_bytes:
+                        raise _FileTooLargeError(f"File too large (> {max_bytes} bytes)")
+                    with tmp.open("wb") as f:
+                        async for chunk in resp.content.iter_chunked(1024 * 64):
+                            if not chunk:
+                                continue
+                            if cancel_cb and cancel_cb():
+                                raise RuntimeError("Cancelled")
+                            size += len(chunk)
+                            if size > max_bytes:
+                                raise _FileTooLargeError(f"File too large (> {max_bytes} bytes)")
+                            f.write(chunk)
+                            if progress_cb and total > 0:
+                                progress = int(size * 100 / total)
+                                progress_cb(progress)
+
+                tmp.replace(path)
+                return size
+
+            except _FileTooLargeError:
+                # Файл слишком большой — не логируем как ошибку, сразу бросаем
+                with contextlib.suppress(Exception):
+                    tmp.unlink(missing_ok=True)
+                raise RuntimeError(f"File too large (> {max_bytes} bytes)")
+            except (ClientPayloadError, aiohttp.ClientConnectionError, aiohttp.ServerDisconnectedError,
+                    asyncio.TimeoutError, aiohttp.ClientOSError, aiohttp.ClientResponseError) as e:
+                last_err = e
+                with contextlib.suppress(Exception):
+                    tmp.unlink(missing_ok=True)
+                await self._log_dlerr(stage, url, attempt, ms_since(t0), e)
+                await asyncio.sleep(0.6 * attempt)
+                continue
+            except Exception as e:
+                with contextlib.suppress(Exception):
+                    tmp.unlink(missing_ok=True)
+                await self._log_dlerr(stage, url, attempt, ms_since(t0), e)
+                raise
+
+        raise RuntimeError(f"Download failed after retries: {last_err}") from last_err
+
+
+class TikTokPageProvider(TikWMClient):
+    """
+    Запасной источник: данные поста читаем прямо со страницы TikTok (JSON внутри HTML).
+    Работает для видео, фото-слайдшоу и live-фото, когда tikwm не разобрал ссылку или лежит (502/522).
+
+    Важно: ссылки на файлы из страницы (v16-webapp-*.tiktok.com) CDN отдаёт только «как браузеру» —
+    с тем же User-Agent, Referer https://www.tiktok.com/ и cookie, выданными вместе со страницей
+    (tt_chain_token). Без них приходит 403 за миллисекунды. Поэтому при чтении страницы запоминаем
+    заголовки для каждой ссылки на медиа и используем их при скачивании (и тот же прокси, если задан).
+    Если TikTok блокирует IP сервера, задай YTDLP_PROXY.
+    """
+    name = "tiktok-page"
+
+    _UAS = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    )
+    # Язык страницы НЕ навязываем: TikTok подсовывает «переведённую»/дублированную версию поста тому, чей язык
+    # отличается от языка видео (раньше здесь был жёстко en-US — видео могло приходить на английском).
+    # Нужен конкретный язык — env TIKTOK_PAGE_ACCEPT_LANGUAGE.
+    ACCEPT_LANGUAGE = os.getenv("TIKTOK_PAGE_ACCEPT_LANGUAGE", "").strip()
+    _CTX_MAX = 600
+    _ctx: Dict[str, Dict[str, Any]] = {}   # media_url -> {"headers": {...}, "proxy": str|None}
+
+    @classmethod
+    def _page_headers(cls, ua: str) -> Dict[str, str]:
+        headers = {"User-Agent": ua, "Accept": "text/html,*/*"}
+        if cls.ACCEPT_LANGUAGE:
+            headers["Accept-Language"] = cls.ACCEPT_LANGUAGE
+        return headers
+
+    @classmethod
+    def _remember(cls, urls: List[str], headers: Dict[str, str], proxy: Optional[str]) -> None:
+        for u in urls:
+            if u:
+                cls._ctx.pop(u, None)
+                cls._ctx[u] = {"headers": headers, "proxy": proxy}
+        while len(cls._ctx) > cls._CTX_MAX:
+            cls._ctx.pop(next(iter(cls._ctx)))
+
+    def _dl_headers(self, url: str) -> Dict[str, str]:
+        ctx = self._ctx.get(url)
+        return dict(ctx["headers"]) if ctx else super()._dl_headers(url)
+
+    def _dl_proxy(self, url: str) -> Optional[str]:
+        ctx = self._ctx.get(url)
+        return ctx["proxy"] if ctx else None
+
+    @staticmethod
+    def _cookie_header(resp, session) -> str:
+        jar: Dict[str, str] = {}
+        with contextlib.suppress(Exception):
+            for k, m in session.cookie_jar.filter_cookies(resp.url).items():
+                jar[k] = m.value
+        with contextlib.suppress(Exception):
+            for k, m in resp.cookies.items():
+                jar[k] = m.value
+        return "; ".join(f"{k}={v}" for k, v in jar.items())
+
+    async def get_media(self, url: str) -> MediaInfo:
+        from core.config import YTDLP_PROXY
+        vid = extract_tiktok_video_id(url)
+        if not vid:
+            raise RuntimeError("TikTok-page: в ссылке нет id поста")
+        mu = re.search(r"tiktok\.com/@([^/?#]+)/", url)
+        user = mu.group(1) if mu else ""
+        pages = [f"https://www.tiktok.com/@{user}/video/{vid}", f"https://www.tiktok.com/@{user}/photo/{vid}"]
+        proxy = YTDLP_PROXY or None
+        errors: List[str] = []
+        for page in pages:
+            for ua in self._UAS:
+                try:
+                    async with self.session.get(
+                        page,
+                        headers=self._page_headers(ua),
+                        allow_redirects=True, proxy=proxy,
+                        timeout=aiohttp.ClientTimeout(total=20),
+                    ) as resp:
+                        if resp.status >= 400:
+                            errors.append(f"HTTP {resp.status}")
+                            continue
+                        html = await resp.text(errors="ignore")
+                        cookie = self._cookie_header(resp, self.session)
+                    got = parse_page_html(html)
+                    if not (got["video"] or got["photos"]):
+                        errors.append("нет медиа")
+                        continue
+                    dl_headers = {"User-Agent": ua, "Accept": "*/*", "Referer": "https://www.tiktok.com/",
+                                  "Origin": "https://www.tiktok.com", "Connection": "keep-alive"}
+                    if cookie:
+                        dl_headers["Cookie"] = cookie
+                    self._remember([got["video"], got["music"], *got["photos"], *got["live"].values()], dl_headers, proxy)
+                    song = got.get("song")
+                    return MediaInfo(video=got["video"], photos=got["photos"], music=got["music"],
+                                     description=_normalize_description(got["description"]) if got["description"] else None,
+                                     live=got["live"] or None,
+                                     music_title=song and song["title"], music_author=song and song["author"],
+                                     music_original=song and song["original"], music_cover=song and song["cover"])
+                except Exception as e:
+                    errors.append(clamp_reason(e))
+        raise RuntimeError("TikTok-page: " + "; ".join(dict.fromkeys(errors)) if errors else "TikTok-page: нет ответа")
+
+
+class ProviderSwitcher:
+    """
+    Цепочка провайдеров с реальным переключением "на лету": если очередной
+    провайдер не смог отдать медиа — тут же (в рамках того же запроса
+    пользователя) пробуем следующий в списке, а не ждём.
+
+    providers[0] — основной (tikwm), дальше — запасные по порядку, если такие
+    появятся. Если у провайдера
+    подряд накопилось много ошибок за короткое окно — временно (на время
+    "остывания") отправляем его в конец очереди, чтобы не долбить
+    видимо упавший сервис на каждый запрос.
+    """
+
+    def __init__(self, providers: List[BaseProvider], bot: Bot):
+        if not providers:
+            raise ValueError("ProviderSwitcher needs at least one provider")
+        self.providers = providers
+        self.bot = bot
+        self._errs: Dict[str, deque] = {p.name: deque() for p in providers}
+
+    def _cleanup(self, name: str) -> None:
+        now = time.time()
+        dq = self._errs.setdefault(name, deque())
+        while dq and now - dq[0] > API_ERROR_WINDOW_SEC:
+            dq.popleft()
+
+    def mark_error(self, provider: BaseProvider) -> None:
+        now = time.time()
+        self._errs.setdefault(provider.name, deque()).append(now)
+        self._cleanup(provider.name)
+
+    def mark_success(self, provider: BaseProvider) -> None:
+        self._errs.setdefault(provider.name, deque()).clear()
+
+    def _order(self) -> List[BaseProvider]:
+        primary = self.providers[0]
+        self._cleanup(primary.name)
+        if len(self._errs.get(primary.name, [])) >= API_ERROR_THRESHOLD:
+            return self.providers[1:] + [primary]
+        return list(self.providers)
+
+    def choose(self) -> BaseProvider:
+        """Оставлено для обратной совместимости — какой провайдер пошёл бы первым."""
+        return self._order()[0]
+
+    async def log_switch(self, using: str, reason: str = "") -> None:
+        lines = [
+            "🔁 Категория: <b>Переключение провайдера</b>",
+            f"📡 Сработал запасной: <b>{html_escape(using)}</b>",
+        ]
+        if reason:
+            lines.append(f"🧨 Основной не смог: <b>{html_escape(reason)}</b>")
+        await log_event(self.bot, "providerfallback", lines)
+
+    async def get_media(self, url: str, raw_url: Optional[str] = None):
+        """
+        Пробует провайдеров по очереди, пока кто-то не вернёт медиа.
+        Если все не смогли и raw_url похож на короткую ссылку —
+        раскрываем редирект и пробуем цепочку ещё раз с реальным URL.
+        Возвращает (MediaInfo, использованный_провайдер).
+        """
+        order = self._order()
+        last_err: Optional[Exception] = None
+        tried: List[str] = []
+
+        # Короткие ссылки (vt./vm./tiktok.com/t/ и новый tt.site/t/) сначала
+        # раскрываем в полный URL видео — tikwm их часто не понимает.
+        if is_tiktok_short_url(url):
+            sess = getattr(order[0], "session", None)
+            if sess:
+                with contextlib.suppress(Exception):
+                    resolved = normalize_tiktok_url(await resolve_tiktok_redirect(sess, url))
+                    if resolved and extract_tiktok_video_id(resolved):
+                        url = resolved
+                        raw_url = None
+
+        for i, provider in enumerate(order):
+            try:
+                media = await provider.get_media(url)
+                self.mark_success(provider)
+                if i > 0:
+                    with contextlib.suppress(Exception):
+                        await self.log_switch(provider.name, reason=", ".join(tried) or "?")
+                return media, provider
+            except Exception as e:
+                last_err = e
+                tried.append(f"{provider.name}: {clamp_reason(e)}")
+                self.mark_error(provider)
+                continue
+
+        if raw_url:
+            sess = getattr(order[0], "session", None)
+            if sess:
+                with contextlib.suppress(Exception):
+                    resolved = normalize_tiktok_url(await resolve_tiktok_redirect(sess, raw_url))
+                    if resolved and resolved != raw_url and resolved != url:
+                        for provider in order:
+                            try:
+                                media = await provider.get_media(resolved)
+                                self.mark_success(provider)
+                                return media, provider
+                            except Exception as e:
+                                last_err = e
+                                self.mark_error(provider)
+                                continue
+
+        raise last_err or RuntimeError("All providers failed")

@@ -1,0 +1,366 @@
+"""
+Конфигурация бота: переменные окружения, константы, логгер.
+"""
+import os
+import re
+import logging
+from pathlib import Path
+from datetime import timezone
+from zoneinfo import ZoneInfo
+
+from dotenv import load_dotenv
+
+# ================== CONFIG ==================
+# .env лежит в корне проекта (рядом с bot.py), а не рядом с этим модулем
+ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH, override=True)
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN не найден. Добавь BOT_TOKEN в .env рядом с bot.py")
+if not re.match(r"^\d+:[A-Za-z0-9_-]{30,}$", BOT_TOKEN):
+    raise RuntimeError("❌ BOT_TOKEN имеет неверный формат. Проверь токен в .env")
+
+# База данных (PostgreSQL на Render)
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+# Render даёт postgres://, asyncpg требует postgresql://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+
+# Путь к JSON для первичной миграции данных (если файл существует — мигрируем)
+DATA_FILE = Path("data.json")
+
+API_URL = "https://tikwm.com/api/"
+ADMINS = {7233257134}  # <-- твой Telegram ID
+
+# Главный админ, куда в ЛС боту приходят заявки в поддержку (/support) —
+# сообщения пользователей пересылаются сюда, обрабатываются ответом
+# (Reply) на пересланное сообщение прямо в этом чате.
+SUPPORT_ADMIN_ID = next(iter(ADMINS))
+
+ADMIN_LOG_FILE = Path("admin.log")
+
+# ========= ЛОКАЛЬНЫЙ BOT API SERVER (нужен, чтобы слать файлы > 50 МБ) =========
+# Обычный облачный Bot API (api.telegram.org) физически не даёт боту
+# ОТПРАВЛЯТЬ файлы тяжелее 50 МБ — это ограничение Telegram, не бота, и
+# никакими настройками в коде оно не обходится. Чтобы отправлять видео
+# весом до 2000 МБ (2 ГБ), нужен свой Local Bot API Server
+# (https://github.com/tdlib/telegram-bot-api).
+#
+# Тут два варианта:
+# 1) Просто заполни API_ID и API_HASH (my.telegram.org -> API development
+#    tools) — bot.py сам запустит telegram-bot-api рядом с ботом (на этом
+#    же устройстве, в т.ч. в Termux) и подключится к нему на 127.0.0.1.
+# 2) Если сервер уже поднят где-то отдельно (свой процесс/другая машина) —
+#    просто укажи LOCAL_BOT_API_URL напрямую, тогда API_ID/API_HASH не нужны.
+#
+# Если ничего из этого не задано — работаем как обычно, лимит 49 МБ.
+API_ID = os.getenv("API_ID", "").strip()
+API_HASH = os.getenv("API_HASH", "").strip()
+
+# Путь к бинарнику telegram-bot-api (если не в PATH — укажи полный путь,
+# например /data/data/com.termux/files/usr/bin/telegram-bot-api).
+LOCAL_BOT_API_BIN = os.getenv("LOCAL_BOT_API_BIN", "telegram-bot-api").strip()
+LOCAL_BOT_API_PORT = int(os.getenv("LOCAL_BOT_API_PORT", "8081"))
+# Куда telegram-bot-api будет сохранять временные файлы (свои, не путать
+# с temp-файлами самого бота).
+LOCAL_BOT_API_DIR = os.getenv("LOCAL_BOT_API_DIR", "").strip() or str(Path.home() / ".telegram-bot-api")
+
+_explicit_local_url = os.getenv("LOCAL_BOT_API_URL", "").strip().rstrip("/")
+if _explicit_local_url:
+    # Сервер поднят отдельно (возможно, не локально) — просто ходим туда.
+    LOCAL_BOT_API_URL = _explicit_local_url
+    LOCAL_BOT_API_IS_LOCAL = os.getenv("LOCAL_BOT_API_IS_LOCAL", "1").strip() == "1"
+elif API_ID and API_HASH:
+    # API_ID/API_HASH заданы — bot.py сам поднимет сервер на этом устройстве
+    # и мы всегда ходим на локальный порт.
+    LOCAL_BOT_API_URL = f"http://127.0.0.1:{LOCAL_BOT_API_PORT}"
+    LOCAL_BOT_API_IS_LOCAL = True
+else:
+    LOCAL_BOT_API_URL = ""
+    LOCAL_BOT_API_IS_LOCAL = False
+
+# Запасной контакт для уже забаненных пользователей (гейт блокирует им
+# доступ ко всем командам бота, включая /support, поэтому у них должен
+# остаться способ написать напрямую).
+SUPPORT_USERNAME = "@tiksavesbotsupport"
+try:
+    MSK_TZ = ZoneInfo("Europe/Moscow")
+except Exception:
+    MSK_TZ = timezone.utc
+
+# Канал для логов (бот должен быть админом канала)
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1003763229922"))
+
+# Технический канал ТОЛЬКО для получения file_id при кэшировании inline-режима
+# (см. handlers/inline_handler.py). ОБЯЗАТЕЛЬНО отдельный от LOG_CHANNEL_ID —
+# туда не должны попадать все скачанные через инлайн видео/фото, это не
+# журнал действий, просто техническое хранилище для повторного использования
+# уже скачанного файла без повторного скачивания. Если не задан (0) —
+# инлайн-режим просто не кэширует и не будет мгновенно отвечать на повторные
+# запросы (каждый раз качает заново).
+INLINE_CACHE_CHANNEL_ID = int(os.getenv("INLINE_CACHE_CHANNEL_ID", "0"))
+
+# Любые поддомены (www, m, vm, vt, lite, ...) + новые короткие домены TikTok
+# (напр. https://www.tt.site/t/XXXX/). Раньше regex знал только
+# tiktok.com / vm. / vt., из-за чего новые форматы ссылок просто игнорировались.
+TIKTOK_DOMAINS = r"(?:tiktok\.com|tiktokv\.com|tiktokv\.us|tiktok\.us|tt\.site)"
+TIKTOK_RE = re.compile(r"(?<![\w.@/=-])(?:https?://)?(?:[a-z0-9-]+\.)*" + TIKTOK_DOMAINS + r"(?=[/?#]|$|\s)", re.I)
+# Короткие/редиректные ссылки: их надо сначала раскрыть в полный URL видео.
+TIKTOK_SHORT_RE = re.compile(
+    r"^https?://(?:(?:vm|vt|vo|m|lite)\.tiktok\.com/|(?:[a-z0-9-]+\.)?tiktok\.com/t/|(?:[a-z0-9-]+\.)?tt\.site/)",
+    re.I,
+)
+
+# ========= YOUTUBE =========
+YOUTUBE_RE = re.compile(
+    r"(https?://)?(www\.|m\.)?(youtube\.com/(watch\?|shorts/|live/)|youtu\.be/)", re.I
+)
+
+# ========= ДРУГИЕ ИСТОЧНИКИ (через тот же движок yt-dlp, что и YouTube) =========
+# Работают только с ПУБЛИЧНЫМ контентом без логина — это ограничение самих
+# площадок (закрытые профили/приватные посты без авторизации не скачать),
+# а не бота.
+INSTAGRAM_RE = re.compile(r"(https?://)?(www\.)?instagram\.com/(reel|reels|p|tv)/", re.I)
+VK_RE = re.compile(r"(https?://)?(www\.|m\.)?(vk\.com|vk\.ru|vkvideo\.ru)/(video|clip)", re.I)
+PINTEREST_RE = re.compile(r"(https?://)?(www\.)?(pinterest\.[a-z.]+/pin/|pin\.it/)", re.I)
+TWITTER_RE = re.compile(
+    r"(https?://)?(www\.|mobile\.|m\.)?(twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com)/(?:i/web/|i/)?(?:[A-Za-z0-9_]+/)?status(?:es)?/\d+",
+    re.I,
+)
+# Reddit: reddit.com/r/<sub>/comments/<id>/…, reddit.com/r/<sub>/s/<код> (короткая «поделиться»), reddit.com/comments/<id>,
+# redd.it/<id>, v.redd.it/<id>; поддомены www./old./np./m./new. — любые.
+REDDIT_RE = re.compile(
+    r"(?<![\w.-])(?:https?://)?(?:"
+    r"(?:[a-z0-9-]+\.)?reddit\.com/(?:(?:r|u|user)/[^\s/?#]+/(?:comments|s)/\w+|comments/\w+)"
+    r"|(?:v\.)?redd\.it/\w+"
+    r")",
+    re.I,
+)
+# Rutube: video/<32 hex>, video/private/<id>, shorts/<id>, play/embed/<id>, embed/<id>
+RUTUBE_RE = re.compile(
+    r"(?<![\w.-])(?:https?://)?(?:www\.|m\.)?rutube\.ru/(?:video(?:/private)?|play/embed|embed|shorts)/[0-9a-f]{32}",
+    re.I,
+)
+
+# История скачиваний для /history: сколько последних записей хранить на человека.
+HISTORY_MAX_PER_USER = int(os.getenv("HISTORY_MAX_PER_USER", "300"))
+
+YOUTUBE_MAX_DURATION_SEC = int(os.getenv("YOUTUBE_MAX_DURATION_SEC", str(3 * 3600)))  # 3 часа
+# Для вертикальных Shorts yt-dlp репортит "height" как реальную высоту в
+# пикселях (у "1080p"-шортса это 1920, а не 1080!) — если тут стоит 720,
+# такие шортсы срезаются до огрызка качества. Ставим с запасом, чтобы
+# доставало и обычным горизонтальным видео (720/1080p), и вертикальным Shorts.
+YOUTUBE_MAX_HEIGHT = int(os.getenv("YOUTUBE_MAX_HEIGHT", "1920"))
+
+# Telegram (обычный облачный Bot API) не даёт боту отправлять файлы больше
+# 50 МБ — берём с небольшим запасом снизу.
+YOUTUBE_MAX_VIDEO_MB = int(os.getenv("YOUTUBE_MAX_VIDEO_MB", "1990" if LOCAL_BOT_API_URL else "49"))
+YOUTUBE_MAX_VIDEO_BYTES = YOUTUBE_MAX_VIDEO_MB * 1024 * 1024
+
+MEDIA_GROUP_LIMIT = 10
+PAGE_SIZE = 10
+PENDING_TTL_SEC = 300
+
+# ========= ВЫБОР КАЧЕСТВА ВИДЕО (YouTube/Instagram/VK/Pinterest) =========
+# Сколько времени у пользователя есть, чтобы нажать на кнопку качества,
+# прежде чем предложение "протухнет" и нужно будет прислать ссылку заново.
+QUALITY_CHOICE_TTL_SEC = int(os.getenv("QUALITY_CHOICE_TTL_SEC", "600"))
+
+# ========= СКОРОСТЬ СКАЧИВАНИЯ (yt-dlp: YouTube/Instagram/VK/Pinterest) =========
+# Параллельные фрагменты для DASH/HLS-потоков — резко ускоряет скачивание
+# больших видео (YouTube/VK часто отдают именно такими потоками). Без этого
+# yt-dlp тянет фрагменты строго по одному.
+YOUTUBE_CONCURRENT_FRAGMENTS = int(os.getenv("YOUTUBE_CONCURRENT_FRAGMENTS", "8"))
+# Размер "чанка" при скачивании обычных (progressive) HTTP-ссылок — параллельные
+# HTTP Range-запросы вместо одного сплошного потока.
+YOUTUBE_HTTP_CHUNK_MB = int(os.getenv("YOUTUBE_HTTP_CHUNK_MB", "10"))
+
+# ========= PREMIUM (оплата Telegram Stars) =========
+# Тарифы: (дней, цена в ⭐). Цены можно менять через env, не трогая код.
+PREMIUM_PLANS = [
+    (30, int(os.getenv("PREMIUM_STARS_30", "150"))),
+    (90, int(os.getenv("PREMIUM_STARS_90", "400"))),
+    (365, int(os.getenv("PREMIUM_STARS_365", "1200"))),
+]
+# Во сколько раз Premium увеличивает лимиты (скачивания подряд, фото, антифлуд).
+PREMIUM_LIMIT_MULT = max(1, int(os.getenv("PREMIUM_LIMIT_MULT", "3")))
+
+# ========= ГРУППЫ =========
+# В группах/супергруппах бот сам реагирует на любые поддерживаемые ссылки (TikTok, YouTube, Instagram, ...),
+# а на обычный текст молчит (не отвечает «пришли ссылку» и не считает болтовню флудом).
+# Чтобы бот видел все сообщения группы, отключи Privacy Mode в @BotFather: /setprivacy -> Disable.
+# GROUP_AUTO_LINKS=0 — в группах бот игнорирует ссылки (работают только команды).
+GROUP_AUTO_LINKS = os.getenv("GROUP_AUTO_LINKS", "1").strip() != "0"
+
+# ========= DONATE =========
+DONATIONALERTS_URL = os.getenv("DONATIONALERTS_URL", "").strip() or "https://dalink.to/tiksavesbot"
+BOT_SHARE_URL = os.getenv("BOT_SHARE_URL", "").strip() or "https://t.me/tiksavesbot"
+# Донат рублями — ТОЛЬКО для пользователей из РФ (отдельная вкладка в /donate).
+# Ozon Банк: оплата по СБП / через разные кошельки и банки на странице оплаты.
+OZON_DONATE_URL = os.getenv("OZON_DONATE_URL", "").strip() or "https://finance.ozon.ru/apps/sbp/ozonbankpay/01a1da9d-8913-7ee1-812c-339b773a8aff"
+STARS_MIN = int(os.getenv("STARS_MIN", "1"))
+STARS_MAX = int(os.getenv("STARS_MAX", "1000"))
+WAITING_STARS_TTL_SEC = 120
+
+# ========= ПОДАРКИ ВЛАДЕЛЬЦУ БОТА (кнопка «🎁 Подарить подарок» в /donate) =========
+# Заполни список сам. Поля:
+#   key    — короткий уникальный id латиницей/цифрами (до ~16 символов, без «:»)
+#   emoji  — эмодзи подарка
+#   name   — название по-русски (показывается, если нет перевода)
+#   price  — цена в Telegram Stars (целое число, 1..10000)
+#   names  — (необязательно) переводы названия: {"en": "Rose", "uk": "Троянда", "kk": "...", "uz": "...", "ky": "..."}
+#   gift_id — (необязательно) id настоящего подарка из каталога Telegram. Если задан, бот после оплаты САМ
+#             отправит владельцу этот подарок (метод sendGift) со своего баланса звёзд. Узнать id: команда /giftids
+#             (для админа). Ставь price не меньше цены подарка в каталоге, иначе бот уйдёт в минус по звёздам.
+# Порядок в списке = порядок кнопок.
+OWNER_GIFTS = [
+    # --- Заменённые позиции ---
+    {"key": "vpn",      "emoji": "🔒", "name": "VPN",              "price": 100,  "names": {"en": "VPN",             "uk": "VPN"}},
+    {"key": "laptop",   "emoji": "💻", "name": "Ноутбук",          "price": 1000, "names": {"en": "Laptop",          "uk": "Ноутбук"}},
+    {"key": "host",     "emoji": "🤖", "name": "Оплата хоста",     "price": 299,  "names": {"en": "Host Payment",    "uk": "Оплата хоста"}},
+    {"key": "internet", "emoji": "🌐", "name": "Оплата интернета", "price": 200,  "names": {"en": "Internet Payment","uk": "Оплата інтернету"}},
+    {"key": "project",  "emoji": "🚀", "name": "На развитие проекта","price": 1000, "names": {"en": "Project Support", "uk": "На розвиток проєкту"}},
+
+    # --- Подарки Telegram (цена · gift_id) ---
+    {"key": "tg_heart",     "emoji": "💝", "name": "Сердце",     "price": 15,  "gift_id": "5170145012310081615", "names": {"en": "Heart",        "uk": "Серце"}},
+    {"key": "tg_teddy",     "emoji": "🧸", "name": "Мишка",      "price": 15,  "gift_id": "5170233102089322756", "names": {"en": "Teddy Bear",   "uk": "Ведмедик"}},
+    {"key": "tg_gift",      "emoji": "🎁", "name": "Подарок",    "price": 25,  "gift_id": "5170250947678437525", "names": {"en": "Gift",         "uk": "Подарунок"}},
+    {"key": "tg_rose",      "emoji": "🌹", "name": "Роза",       "price": 25,  "gift_id": "5168103777563050263", "names": {"en": "Rose",         "uk": "Троянда"}},
+    {"key": "tg_cake",      "emoji": "🎂", "name": "Торт",       "price": 50,  "gift_id": "5170144170496491616", "names": {"en": "Birthday Cake","uk": "Торт"}},
+    {"key": "tg_bouquet",   "emoji": "💐", "name": "Букет",      "price": 50,  "gift_id": "5170314324215857265", "names": {"en": "Bouquet",      "uk": "Букет"}},
+    {"key": "tg_rocket",    "emoji": "🚀", "name": "Ракета",     "price": 50,  "gift_id": "5170564780938756245", "names": {"en": "Rocket",       "uk": "Ракета"}},
+    {"key": "tg_trophy",    "emoji": "🏆", "name": "Кубок",      "price": 100, "gift_id": "5168043875654172773", "names": {"en": "Trophy",       "uk": "Кубок"}},
+    {"key": "tg_ring",      "emoji": "💍", "name": "Кольцо",     "price": 100, "gift_id": "5170690322832818290", "names": {"en": "Ring",         "uk": "Кільце"}},
+    {"key": "tg_diamond",   "emoji": "💎", "name": "Алмаз",      "price": 100, "gift_id": "5170521118301225164", "names": {"en": "Diamond",      "uk": "Діамант"}},
+    {"key": "tg_champagne", "emoji": "🍾", "name": "Шампанское", "price": 50,  "gift_id": "6028601630662853006", "names": {"en": "Champagne",    "uk": "Шампанське"}},
+]
+OWNER_GIFT_TEXT_MAX = int(os.getenv("OWNER_GIFT_TEXT_MAX", "300"))   # макс. длина текста к подарку
+OWNER_GIFT_TTL_SEC = int(os.getenv("OWNER_GIFT_TTL_SEC", "900"))     # сколько живёт незавершённый выбор подарка
+# True — в карточке подарка, которую получает владелец, ВСЕГДА «Аноним» (даже если даритель выбрал «не анонимно»).
+# Настоящий отправитель в любом случае пишется в лог-канал (категория ownergift) и в admin.log.
+OWNER_GIFT_HIDE_SENDER_ALWAYS = os.getenv("OWNER_GIFT_HIDE_SENDER_ALWAYS", "0") == "1"
+
+# ========= GLOBAL LIMITS =========
+# Сколько скачиваний могут обрабатываться параллельно (а не одно за другим).
+# Раньше было = 1 (строгая очередь "один за раз, ~раз в минуту").
+GLOBAL_CONCURRENCY = int(os.getenv("GLOBAL_CONCURRENCY", "12"))
+
+# ========= SPAM LIMIT (тихий cooldown, без страйков) =========
+# Лимиты сделаны мягкими: обычный человек, кидающий пачку ссылок подряд,
+# в них не упирается. Всё переопределяется через переменные окружения.
+EVENT_WINDOW_SEC = int(os.getenv("EVENT_WINDOW_SEC", "15"))
+EVENT_MAX = int(os.getenv("EVENT_MAX", "30"))
+SPAM_COOLDOWN_SEC = int(os.getenv("SPAM_COOLDOWN_SEC", "15"))
+
+# ========= DOWNLOAD LIMIT =========
+DL_WINDOW_SEC = int(os.getenv("DL_WINDOW_SEC", "60"))
+DL_MAX_ACTIONS = int(os.getenv("DL_MAX_ACTIONS", "25"))
+
+# ========= PHOTO VOLUME LIMIT =========
+PHOTO_WINDOW_SEC = int(os.getenv("PHOTO_WINDOW_SEC", "60"))
+PHOTO_LIMIT_PER_MIN = int(os.getenv("PHOTO_LIMIT_PER_MIN", "400"))
+
+# ========= AUTOSAVE =========
+AUTO_SAVE_INTERVAL_SEC = 5  # автосинхронизация раз в N сек
+
+# ========= DESCRIPTION (CAPTION TEXT) =========
+# Если описание видео влезает в это ограничение — шлём сообщением,
+# иначе — файлом (.txt), чтобы не обрезать текст.
+DESCRIPTION_TG_LIMIT = 3500
+
+# ========= VIDEO/AUDIO FALLBACK DOWNLOAD =========
+# Telegram (обычный облачный Bot API) не даёт боту отправлять файлы больше
+# 50 МБ — это ограничение платформы, не бота.
+MAX_VIDEO_MB = int(os.getenv("MAX_VIDEO_MB", "1990" if LOCAL_BOT_API_URL else "49"))
+MAX_VIDEO_BYTES = MAX_VIDEO_MB * 1024 * 1024
+# Если облачный Bot API (лимит 50 МБ) и файл тяжелее лимита — вместо отказа
+# сжимаем видео через ffmpeg до нужного размера. Скачиваем при этом файлы
+# до DOWNLOAD_HARD_CAP_MB (больше — уже отказ, чтобы не забить диск/время).
+COMPRESS_OVER_LIMIT = os.getenv("COMPRESS_OVER_LIMIT", "1").strip() == "1"
+# С локальным Bot API (отправка до ~2 ГБ) потолок скачивания должен быть не ниже
+# лимита отправки — иначе файлы 600 МБ…2 ГБ отваливаются на скачивании
+# ("File too large (> 629145600 bytes)"). Без локального API — 600 МБ (дальше сжатие).
+DOWNLOAD_HARD_CAP_MB = int(os.getenv("DOWNLOAD_HARD_CAP_MB", "2000" if LOCAL_BOT_API_URL else "600"))
+DOWNLOAD_HARD_CAP_BYTES = DOWNLOAD_HARD_CAP_MB * 1024 * 1024
+
+# Куки для yt-dlp (YouTube "Sign in to confirm you're not a bot", Instagram,
+# TikTok 18+). Либо путь к cookies.txt (Netscape), либо содержимое файла в
+# base64 в переменной YTDLP_COOKIES_B64 (удобно для Render — без файлов).
+YTDLP_COOKIES_FILE = os.getenv("YTDLP_COOKIES_FILE", "").strip()
+YTDLP_COOKIES_B64 = os.getenv("YTDLP_COOKIES_B64", "").strip()
+# Прокси для yt-dlp (http://user:pass@host:port или socks5://...). Бот-проверка YouTube
+# завязана на IP: через прокси с "чистым" IP cookies не нужны.
+YTDLP_PROXY = os.getenv("YTDLP_PROXY", "").strip()
+# Опционально: URL сервера PO-токенов (https://github.com/Brainicism/bgutil-ytdlp-pot-provider),
+# например http://127.0.0.1:4416. Нужен плагин bgutil-ytdlp-pot-provider.
+YTDLP_POT_URL = os.getenv("YTDLP_POT_URL", "").strip()
+# Автообновление yt-dlp (YouTube ломает старые версии каждые несколько недель).
+YTDLP_AUTOUPDATE = os.getenv("YTDLP_AUTOUPDATE", "1").strip() == "1"
+YTDLP_UPDATE_PRE = os.getenv("YTDLP_UPDATE_PRE", "1").strip() == "1"   # nightly-сборки — фиксы быстрее
+YTDLP_UPDATE_EVERY_HOURS = int(os.getenv("YTDLP_UPDATE_EVERY_HOURS", "12"))
+
+MAX_AUDIO_MB = int(os.getenv("MAX_AUDIO_MB", "25"))
+MAX_AUDIO_BYTES = MAX_AUDIO_MB * 1024 * 1024
+
+def downgrade_to_cloud_limits() -> None:
+    """Local Bot API Server не поднялся — возвращаемся на лимит облачного API (49 МБ),
+    в том числе в уже импортированных модулях (они копируют константы при import)."""
+    import sys
+    global LOCAL_BOT_API_URL, YOUTUBE_MAX_VIDEO_MB, YOUTUBE_MAX_VIDEO_BYTES, MAX_VIDEO_MB, MAX_VIDEO_BYTES
+    global DOWNLOAD_HARD_CAP_MB, DOWNLOAD_HARD_CAP_BYTES
+    LOCAL_BOT_API_URL = ""
+    if "DOWNLOAD_HARD_CAP_MB" not in os.environ:
+        DOWNLOAD_HARD_CAP_MB = 600
+        DOWNLOAD_HARD_CAP_BYTES = 600 * 1024 * 1024
+    YOUTUBE_MAX_VIDEO_MB = MAX_VIDEO_MB = 49
+    YOUTUBE_MAX_VIDEO_BYTES = MAX_VIDEO_BYTES = 49 * 1024 * 1024
+    for mod in list(sys.modules.values()):
+        if mod is None or getattr(mod, "__name__", "") == __name__:
+            continue
+        for name, val in (("MAX_VIDEO_MB", 49), ("MAX_VIDEO_BYTES", 49 * 1024 * 1024),
+                          ("YOUTUBE_MAX_VIDEO_MB", 49), ("YOUTUBE_MAX_VIDEO_BYTES", 49 * 1024 * 1024)) + (
+                (("DOWNLOAD_HARD_CAP_MB", DOWNLOAD_HARD_CAP_MB), ("DOWNLOAD_HARD_CAP_BYTES", DOWNLOAD_HARD_CAP_BYTES))
+                if "DOWNLOAD_HARD_CAP_MB" not in os.environ else ()):
+            if name in getattr(mod, "__dict__", {}):
+                setattr(mod, name, val)
+
+
+# ========= API FALLBACK / HEALTH =========
+API_ERROR_WINDOW_SEC = 120
+API_ERROR_THRESHOLD = 6
+
+# Небольшая задержка между запросами к бесплатному tikwm API — чтобы не
+# словить рейт-лимит/бан на их стороне при частых запросах.
+TIKWM_COOLDOWN_SEC = float(os.getenv("TIKWM_COOLDOWN_SEC", "1.2"))
+
+BAN_DURATION_SEC = int(os.getenv("BAN_DURATION_SEC", str(24 * 3600)))  # 24 часа по умолчанию
+BAN_REASON_SPAM = "Авто-бан: спам/флуд"
+
+# Подпись с указанием бота
+CAPTION_PHOTO = "🖼 <b>Готово</b> · @tiksavesbot"
+CAPTION_VIDEO = "🎬 <b>Готово</b> · @tiksavesbot"
+CAPTION_AUDIO = "🎵 <b>Звук готов</b> · @tiksavesbot"
+
+ALBUM_PAUSE_MIN = 0.4
+ALBUM_PAUSE_MAX = 0.8
+
+BROADCAST_DELAY_SEC = 0.35
+BROADCAST_MAX_USERS = 5000
+
+PHOTO_WARNING_TEXT = (
+    "<b>⚠️ Перед скачиванием</b>\n"
+    "<blockquote>Скачивай только свой контент или тот, на который есть разрешение автора. Уважай чужой труд 🙏</blockquote>"
+)
+
+MSG_SPAM = "🛡 <b>Не так быстро</b>\nЗапросы идут слишком часто. Подожди ~{n} сек. и пробуй снова — это защита от флуда."
+MSG_DL = "⏳ <b>Лимит скачиваний</b>\nПодожди ~{n} сек. — и продолжим."
+MSG_PHOTO = "📸 <b>Лимит по фото</b>\nПодожди ~{n} сек. — и продолжим."
+
+# ========= ПОДДЕРЖКА (/support) =========
+# Сколько ждём сообщение пользователя после /support, прежде чем считать
+# заявку неактуальной.
+SUPPORT_WAIT_TTL_SEC = 600
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+log = logging.getLogger("tiktok_bot")
